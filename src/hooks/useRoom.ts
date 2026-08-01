@@ -81,12 +81,15 @@ export function useRoom(code: string | null) {
     };
 
     const handleWordPhaseStart = (data: RoomPublic & TurnState) => {
+      // Round 2 of a 2-imposter game re-enters the word phase, and round 1's
+      // words are the evidence players are arguing over — keep them.
+      const continuing = (data.gameRound ?? 1) > 1;
       setState((prev) => ({
         ...prev,
         room: data,
         phase: 'words',
-        words: [],
-        chatMessages: [],
+        words: continuing ? prev.words : [],
+        chatMessages: continuing ? prev.chatMessages : [],
         turnState: {
           activePlayerId: data.activePlayerId,
           turnTimeLeft: data.turnTimeLeft,
@@ -265,6 +268,7 @@ export function useRoom(code: string | null) {
           imposterVideoUrl?: string;
           wordsPerPlayer?: number;
           maxPlayers?: number;
+          imposterCount?: number;
           chatType?: ChatType;
           videoCategory?: string | null;
         }

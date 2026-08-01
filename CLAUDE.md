@@ -46,8 +46,13 @@ Roles are covered by the same rule: `game:assigned` carries **only** `videoUrl`.
 **Phase machine** — `lobby → playing → words → deliberation → results`, back to `lobby`. Names match the spec's vocabulary (sections 6–8). The server owns `room.phase`; `src/hooks/useRoom.ts` mirrors it into React state, and `src/app/room/[code]/page.tsx` switches between `LobbyScreen` / `GameScreen` / `WordsScreen` / `DeliberationScreen` / `ResultsScreen`. Transitions:
 - `playing → words`: **Ready Check** (section 6). Every player reports their own `game:videoEnded`, then clicks Ready (`game:readyToAdvance`). Advances when all are ready, or 10s after the *imposter's* video ends — the server starts that grace timer because it alone knows who the imposter is.
 - `words → deliberation`: when the turn order is exhausted. Each turn is 10s; timing out auto-skips with a blank word.
-- `deliberation → results`: when every connected player has voted, or the 90s window expires — whichever comes first.
+- `deliberation → results`: when every *active* player has voted, or the 90s window expires — whichever comes first.
+- `deliberation → words` **again**, in a 2-imposter game only — see below.
 - A **tie** does not resolve to results. `resolveVote()` returns a `revote`, and the round loops (see below).
+
+**The 2-imposter game runs the loop twice (section 3).** `imposterCount` is a host setting that unlocks at 7 players; at 2, `totalGameRounds()` returns 2 and the machine becomes `words → deliberation → words → deliberation → results`. `room.gameRound` tracks which pass you're in and `room.accusedIds` collects who has been ejected. **The accused's role is not revealed between rounds** — that withheld reveal is the whole mechanic, so `accusedIds` is safe to broadcast but nothing role-shaped may ride along with it. `activePlayers()` (connected *and* not accused) is what drives turn order, the ballot, and the "everyone voted" check; `connectedPlayers()` still covers the Ready Check, which happens once before round 1. Round 2 re-enters through `beginNextGameRound()` → `emitWordPhaseStart()`, skipping `beginWordPhase`'s caller because the turn order is already set. There is no second video and no second Ready Check.
+
+Two 2-imposter rules cut across the normal ones. `resolveVote()` gains an `allImpostersCaught` outcome: a deadlock with no swing voters *between exactly the imposters* resolves for the crew instead of looping, because the group collectively named precisely the right people. And rewards stop being a win/lose flip — `coinsFor()` pays off the section 3 table by how many of the two were caught (crew 50/100/150, suspects 150/75/50), which is why `GameResults` carries `outcome: 'crew' | 'imposter' | 'split'` rather than just `crewWins`.
 
 **Timers are server-authoritative.** One `setInterval` per room in the module-level `roomTimers` Map, driven through `setRoomTimer()`/`clearRoomTimer()`. Phases are sequential so a single slot suffices. **Every path that ends a phase must clear it** — disconnects, `game:backToLobby`, room deletion — or intervals tick against a dead room. Each tick re-reads the room via `getRoom()` and bails if the phase moved on, so a stale timer cannot corrupt a later phase.
 
@@ -76,7 +81,7 @@ Verified against `src/` as of this file's writing. These are bugs-against-spec, 
 
 Phase 1 (spec §16) closed most of the original gaps. **Fixed and verified:** role secrecy, single imposter, lobby size 4–10, reward values, combined 90s deliberation window, server-authoritative vote timer, split-vote re-vote and tie-break loops, per-player Ready Check, and the `none` comms mode.
 
-Phase 2 so far: the full genre list (§4), the `/content/videos.json` config with per-lobby no-repeat (§14), and the host controls from §4 — manual host transfer (`room:transferHost`) plus mid-lobby settings changes. `room:updateSettings` is now guarded to the `lobby` phase, because §4 scopes those changes to *between* rounds; changing genre clears both loaded URLs so a Custom lobby cannot start on the previous round's pool clips.
+Phase 2 so far: the full genre list (§4), the `/content/videos.json` config with per-lobby no-repeat (§14), the host controls from §4 — manual host transfer (`room:transferHost`) plus mid-lobby settings changes — the Apple provider swap (§11), and the 2-imposter two-round flow (§3). `room:updateSettings` is now guarded to the `lobby` phase, because §4 scopes those changes to *between* rounds; changing genre clears both loaded URLs so a Custom lobby cannot start on the previous round's pool clips.
 
 `ChatType` is `'text' | 'voice' | 'video' | 'none'`, but the host form on `/dashboard` deliberately offers only a text on/off toggle (`'text'` or `'none'`) — §16 scopes Phase 1 to "text chat only (+ 'None' comms option)". The other two values stay in the union and in the lobby-list pill lookup so Phase 2 only has to add the buttons back; don't delete them.
 
@@ -85,7 +90,6 @@ Still outstanding:
 | Area | Spec (`docs/BUILD-PLAN.md`) | Code today | Phase |
 |---|---|---|---|
 | Custom genre | A host who picks Custom cannot play that round — they already know the answers (§4) | Custom is selectable but the host still plays | 2 |
-| 2-imposter flow | Two word+vote rounds, accused removed between them (§3) | Not implemented; `imposterCount` pinned to 1 | 2 |
 | Voting visibility | Host picks Public or Anonymous (§4) | Always broadcasts a live tally | 3 |
 | Currency | Persistent, account-bound (§9, §11) | localStorage only (`useShop.ts`) | 3 |
 | Reconnect | — | Identity is `socket.id`, so a refresh makes a new player and drops you from the round | — |

@@ -51,7 +51,16 @@ export function ResultsScreen({ results, socketId, isHost, actions, code }: Prop
   const imposterPlayers = results.players.filter((p) => imposterIds.includes(p.id));
   const isImposter = imposterIds.includes(socketId);
   const crewWins = results.crewWins;
-  const iWon = isImposter !== crewWins;
+
+  // A 2-imposter game can land between the two sides: exactly one of the pair
+  // caught means nobody swept it, and section 3 pays both a middle amount.
+  const outcome = results.outcome ?? (crewWins ? 'crew' : 'imposter');
+  const impostersCaught = results.impostersCaught ?? (crewWins ? 1 : 0);
+  const imposterCount = results.imposterCount ?? imposterIds.length;
+  const iWon = outcome === 'split' ? false : isImposter !== crewWins;
+  const accusedNames = results.accusedNames?.length
+    ? results.accusedNames
+    : [results.mostVotedName || 'NOBODY'];
 
   // Reveal sequence: eject the tape, then the verdict, then the payout.
   useEffect(() => {
@@ -105,7 +114,16 @@ export function ResultsScreen({ results, socketId, isHost, actions, code }: Prop
   }
 
   const accusedName = results.mostVotedName || 'NOBODY';
-  const bannerColor = crewWins ? 'var(--neon-green)' : 'var(--neon-magenta)';
+  // The cassette in the deck belongs to the final accusation, so its label
+  // follows that player's role, not the overall outcome.
+  const headlineWasImposter =
+    !!results.mostVotedId && imposterIds.includes(results.mostVotedId);
+  const bannerColor =
+    outcome === 'crew'
+      ? 'var(--neon-green)'
+      : outcome === 'split'
+      ? 'var(--neon-yellow)'
+      : 'var(--neon-magenta)';
 
   // Rank without mutating the payload we were handed.
   const ranked = [...results.players].sort((a, b) => b.votes - a.votes);
@@ -119,7 +137,7 @@ export function ResultsScreen({ results, socketId, isHost, actions, code }: Prop
             TAPE EJECTED
           </h2>
           <p className="osd-text" style={{ color: '#aaa' }}>
-            Votes tallied — the deck is spitting out {accusedName}…
+            Votes tallied — the deck is spitting out {accusedNames.join(' and ')}…
           </p>
         </div>
 
@@ -136,7 +154,7 @@ export function ResultsScreen({ results, socketId, isHost, actions, code }: Prop
                   className="tape-tag"
                   style={{ backgroundColor: 'var(--neon-magenta)', color: '#fff' }}
                 >
-                  {crewWins ? 'SUSPECT-X' : 'INNOCENT'}
+                  {headlineWasImposter ? 'SUSPECT-X' : 'INNOCENT'}
                 </div>
                 <div className="tape-label">
                   <div
@@ -146,7 +164,9 @@ export function ResultsScreen({ results, socketId, isHost, actions, code }: Prop
                     {ejected ? accusedName : '???'}
                   </div>
                   <div className="tape-sublabel">
-                    <span>{ejected ? (crewWins ? 'SUSPECT' : 'CREWMATE') : 'UNKNOWN'}</span>
+                    <span>
+                      {ejected ? (headlineWasImposter ? 'SUSPECT' : 'CREWMATE') : 'UNKNOWN'}
+                    </span>
                     <span>● EJECT</span>
                   </div>
                 </div>
@@ -170,11 +190,17 @@ export function ResultsScreen({ results, socketId, isHost, actions, code }: Prop
               className="brutal-title"
               style={{ fontSize: '1.5rem', color: '#000', textShadow: 'none', marginBottom: 10 }}
             >
-              {crewWins ? '🚀 CREW VICTORY!' : '👁️ SUSPECT VICTORY!'}
+              {outcome === 'crew'
+                ? '🚀 CREW VICTORY!'
+                : outcome === 'split'
+                ? '⚖️ SPLIT DECISION'
+                : '👁️ SUSPECT VICTORY!'}
             </h3>
             <p style={{ fontWeight: 600 }}>
-              {crewWins
-                ? `The suspect was detected and ejected from the deck.`
+              {imposterCount > 1
+                ? `${impostersCaught} of ${imposterCount} suspects caught.`
+                : crewWins
+                ? 'The suspect was detected and ejected from the deck.'
                 : `${accusedName} was innocent — the suspect stayed in the deck.`}
             </p>
             <p style={{ fontWeight: 600, marginTop: 8 }}>
@@ -189,7 +215,7 @@ export function ResultsScreen({ results, socketId, isHost, actions, code }: Prop
               className="brutal-title"
               style={{ fontSize: '1.2rem', color: '#000', textShadow: 'none', marginTop: 12 }}
             >
-              {iWon ? '🎉 YOU WON' : '😞 YOU LOST'}
+              {outcome === 'split' ? '🤝 HALF A RESULT' : iWon ? '🎉 YOU WON' : '😞 YOU LOST'}
               {isImposter ? ' — YOU WERE THE SUSPECT' : ''}
             </p>
           </div>

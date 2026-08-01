@@ -76,10 +76,18 @@ export function DeliberationScreen({
   const chatEnabled = room.settings.chatType === 'text';
   const inRevote = !!revoteCandidates;
   const canRecast = !eligibleVoters || eligibleVoters.includes(socketId);
-  const locked = inRevote && !canRecast;
+
+  // Section 3: someone ejected in round 1 neither votes nor stands in round 2.
+  const accusedIds = room.accusedIds ?? [];
+  const amAccused = accusedIds.includes(socketId);
+  const totalRounds = room.totalRounds ?? 1;
+  const gameRound = room.gameRound ?? 1;
+
+  const locked = (inRevote && !canRecast) || amAccused;
 
   const handleVote = (targetId: string) => {
     if (myVote || targetId === socketId || locked) return;
+    if (accusedIds.includes(targetId)) return;
     if (inRevote && !revoteCandidates!.includes(targetId)) return;
 
     setMyVote(targetId);
@@ -113,9 +121,12 @@ export function DeliberationScreen({
             <div>
               <h2 className="brutal-title" style={{ fontSize: '1.8rem' }}>
                 🚨 EJECT VOTING SYSTEM
+                {totalRounds > 1 ? ` — VOTE ${gameRound} OF ${totalRounds}` : ''}
               </h2>
               <p className="osd-text" style={{ color: '#aaa', marginTop: 4 }}>
-                {locked
+                {amAccused
+                  ? 'You were ejected — you can watch, but the ballot is closed to you'
+                  : locked
                   ? 'Your vote stands — waiting on the swing voters to break the tie'
                   : inRevote
                   ? 'TIE DETECTED — recast, restricted to the tied decks'
@@ -146,7 +157,9 @@ export function DeliberationScreen({
               const color = CHANNEL_COLORS[i % CHANNEL_COLORS.length];
               const votes = voteTally?.tally?.[player.id] ?? 0;
               const isMe = player.id === socketId;
-              const onBallot = !inRevote || revoteCandidates!.includes(player.id);
+              const ejected = accusedIds.includes(player.id);
+              const onBallot =
+                !ejected && (!inRevote || revoteCandidates!.includes(player.id));
               const selectable = !myVote && !isMe && !locked && onBallot;
 
               return (
@@ -204,6 +217,9 @@ export function DeliberationScreen({
                     </div>
                   </div>
                   {myVote === player.id && <div className="vote-stamp">SUSPECT</div>}
+                  {ejected && myVote !== player.id && (
+                    <div className="vote-stamp">EJECTED</div>
+                  )}
                 </div>
               );
             })}

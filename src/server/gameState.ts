@@ -51,6 +51,13 @@ export interface RoomState {
   readyToAdvance: Record<string, boolean>;  // socketId -> clicked Ready
   imposterVideoEndedAt: number | null;      // epoch ms, starts the 10s grace
 
+  // ── 2-imposter structure, section 3 ──
+  // A 2-imposter game runs two full word+vote rounds. The player accused in
+  // round 1 is removed from active play for round 2 — but their role is NOT
+  // revealed until results, which is the whole point of splitting the vote.
+  gameRound: number;                        // 1, or 2 in a 2-imposter game
+  accusedIds: string[];                     // accused so far, in vote order
+
   // ── Word phase, section 7 ──
   wordsUsed: Record<string, number>;        // socketId -> words submitted
   turnOrder: string[];                      // randomized player ids
@@ -82,6 +89,8 @@ function freshRoundState() {
     videoEnded: {} as Record<string, boolean>,
     readyToAdvance: {} as Record<string, boolean>,
     imposterVideoEndedAt: null,
+    gameRound: 1,
+    accusedIds: [] as string[],
     wordsUsed: {} as Record<string, number>,
     turnOrder: [] as string[],
     turnIndex: -1,
@@ -234,6 +243,24 @@ export function connectedPlayers(room: RoomState): Player[] {
   return room.players.filter((p) => p.status === 'connected');
 }
 
+/**
+ * Everyone still in the game: connected and not yet accused. In a 1-imposter
+ * game this is the same as connectedPlayers, because nobody is ever removed
+ * mid-game. In a 2-imposter game the round-1 accused drops out of the turn
+ * order and the round-2 ballot (section 3) — they still see everything, they
+ * just can't speak or vote.
+ */
+export function activePlayers(room: RoomState): Player[] {
+  return room.players.filter(
+    (p) => p.status === 'connected' && !room.accusedIds.includes(p.id)
+  );
+}
+
+/** 2 for a 2-imposter game, 1 otherwise (section 3). */
+export function totalGameRounds(room: RoomState): number {
+  return room.settings.imposterCount >= 2 ? 2 : 1;
+}
+
 export function allReadyToAdvance(room: RoomState): boolean {
   const active = connectedPlayers(room);
   return active.length > 0 && active.every((p) => room.readyToAdvance[p.id]);
@@ -255,10 +282,31 @@ export function beginWordPhase(room: RoomState): void {
   room.phase = 'words';
   room.wordsUsed = {};
   // Turn order is randomized each round and visible to all players (section 7).
-  room.turnOrder = shuffle(connectedPlayers(room).map((p) => p.id));
+  // The round-1 accused is not in it (section 3).
+  room.turnOrder = shuffle(activePlayers(room).map((p) => p.id));
   room.turnIndex = 0;
   room.activePlayerId = room.turnOrder[0] ?? null;
   room.turnTimeLeft = TURN_SECONDS;
+}
+
+/**
+ * Opens word round 2 of a 2-imposter game (section 3): the round-1 accused is
+ * removed from active play and everyone else says one more word. Roles and the
+ * videos stay put — there is no second Ready Check, and crucially no reveal.
+ */
+export function beginNextGameRound(room: RoomState, accusedId: string | null): void {
+  if (accusedId) room.accusedIds.push(accusedId);
+  room.gameRound++;
+  room.votes = {};
+  room.voteRound = 0;
+  room.revoteCandidates = null;
+  room.deliberationEndsAt = null;
+  beginWordPhase(room);
+}
+
+/** Picks `count` imposters uniformly. They all share one video (section 3). */
+export function pickImposters(room: RoomState, count: number): string[] {
+  return shuffle(room.players.map((p) => p.id)).slice(0, Math.max(1, count));
 }
 
 export const TURN_SECONDS = 10;
@@ -305,6 +353,9 @@ export function castVote(
   if (room.phase !== 'deliberation') return { ok: false, reason: 'not_voting' };
   if (voterId === targetId) return { ok: false, reason: 'self' };
   if (room.votes[voterId]) return { ok: false, reason: 'already_voted' };
+  // Section 3: the round-1 accused neither votes nor stands in round 2.
+  if (room.accusedIds.includes(voterId)) return { ok: false, reason: 'not_eligible' };
+  if (room.accusedIds.includes(targetId)) return { ok: false, reason: 'not_a_candidate' };
 
   // During a tie re-vote the ballot is restricted to the tied players, and
   // only the voters asked to recast may vote (section 8).
@@ -326,16 +377,18 @@ export function getVoteTally(room: RoomState): Record<string, number> {
   return tally;
 }
 
-/** Everyone still connected who has not yet cast a vote this round. */
+/** Everyone still in the game who has not yet cast a vote this round. */
 export function pendingVoters(room: RoomState): string[] {
-  return connectedPlayers(room)
+  return activePlayers(room)
     .map((p) => p.id)
     .filter((id) => !room.votes[id]);
 }
 
 export type VoteOutcome =
   | { kind: 'accused'; accusedId: string | null }
-  | { kind: 'revote'; candidates: string[]; eligibleVoters: string[] };
+  | { kind: 'revote'; candidates: string[]; eligibleVoters: string[] }
+  /** Section 3: the deadlocked ballot named exactly the imposters. */
+  | { kind: 'allImpostersCaught' };
 
 /**
  * Resolves the current ballot per section 8.
@@ -345,6 +398,12 @@ export type VoteOutcome =
  * candidates; players already behind a tied candidate keep their vote. If
  * there are no swing voters the whole ballot re-runs among the tied players
  * and loops until somebody switches — the round cannot conclude on a tie.
+ *
+ * The one exception is the 2-imposter rule in section 3: a deadlock with no
+ * swing voters, between exactly the imposters, means the group collectively
+ * pinned precisely the right people. That resolves in the crew's favour
+ * instead of looping. A tie between an imposter and a crewmate gets no such
+ * shortcut and loops like any other.
  */
 export function resolveVote(room: RoomState): VoteOutcome {
   const tally = getVoteTally(room);
@@ -361,15 +420,22 @@ export function resolveVote(room: RoomState): VoteOutcome {
     return { kind: 'accused', accusedId: topIds[0] };
   }
 
+  const stillPlaying = new Set(activePlayers(room).map((p) => p.id));
   const swingVoters = Object.entries(room.votes)
     .filter(([, target]) => !topIds.includes(target))
     .map(([voterId]) => voterId)
-    .filter((id) => room.players.some((p) => p.id === id && p.status === 'connected'));
+    .filter((id) => stillPlaying.has(id));
+
+  if (
+    swingVoters.length === 0 &&
+    topIds.length === room.imposterIds.length &&
+    topIds.every((id) => room.imposterIds.includes(id))
+  ) {
+    return { kind: 'allImpostersCaught' };
+  }
 
   const eligibleVoters =
-    swingVoters.length > 0
-      ? swingVoters
-      : connectedPlayers(room).map((p) => p.id);
+    swingVoters.length > 0 ? swingVoters : [...stillPlaying];
 
   return { kind: 'revote', candidates: topIds, eligibleVoters };
 }

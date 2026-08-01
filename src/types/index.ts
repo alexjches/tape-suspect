@@ -22,6 +22,16 @@ export interface RoomPublic {
   code: string;
   hostId: string;
   phase: GamePhase;
+  /** 1, or 2 during the second half of a 2-imposter game (section 3). */
+  gameRound: number;
+  /** 2 for a 2-imposter game, 1 otherwise. */
+  totalRounds: number;
+  /**
+   * Players ejected by a completed vote. Safe to broadcast — being accused
+   * says nothing about your role, which is exactly why section 3 withholds
+   * the reveal until both rounds are done.
+   */
+  accusedIds: string[];
   players: PlayerPublic[];
   settings: {
     isPublic: boolean;
@@ -56,8 +66,20 @@ export interface GameResults {
   imposterIds: string[];    // all imposters
   imposterName: string;
   imposterAvatar: string;
+  /** The final accusation — the one the results screen ejects on camera. */
   mostVotedId: string | null;
   mostVotedName: string;
+  /** Everyone ejected, in vote order: one round normally, two with 2 suspects. */
+  accusedIds: string[];
+  accusedNames: string[];
+  imposterCount: number;
+  impostersCaught: number;
+  /**
+   * 'split' only happens in a 2-imposter game where exactly one of the two was
+   * caught — neither side swept it, and section 3 pays both a middle amount.
+   */
+  outcome: 'crew' | 'imposter' | 'split';
+  /** True only when every imposter was caught. */
   crewWins: boolean;
   tally: Record<string, number>;
   // Safe to send only now that voting has closed — compare the two tapes.
@@ -69,6 +91,7 @@ export interface GameResults {
     avatar: string;
     votes: number;
     isImposter: boolean;
+    wasAccused: boolean;
     coinReward: CoinReward;
   }[];
 }

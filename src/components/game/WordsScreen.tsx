@@ -25,6 +25,16 @@ export function WordsScreen({ room, socketId, code, words, turnState, actions }:
   const timeLeft = turnState?.turnTimeLeft ?? 0;
   const activePlayer = room.players.find((p) => p.id === activeId);
 
+  // Section 3: in a 2-imposter game the round-1 accused sits round 2 out.
+  // Their role is still hidden — all anyone knows is that they were ejected.
+  const accusedIds = room.accusedIds ?? [];
+  const totalRounds = room.totalRounds ?? 1;
+  const gameRound = room.gameRound ?? 1;
+  const amAccused = accusedIds.includes(socketId);
+  const accusedNames = accusedIds
+    .map((id) => room.players.find((p) => p.id === id)?.name ?? '???')
+    .join(', ');
+
   // Grab focus the moment the turn lands so the 10s isn't spent clicking.
   useEffect(() => {
     if (isMyTurn) inputRef.current?.focus();
@@ -42,12 +52,24 @@ export function WordsScreen({ room, socketId, code, words, turnState, actions }:
     <div className="view-panel active-view">
       <div className="watch-container" style={{ display: 'block', padding: '20px' }}>
         <h2 className="brutal-title" style={{ fontSize: '1.8rem', marginBottom: 8 }}>
-          🎙️ WORD PHASE
+          🎙️ WORD PHASE{totalRounds > 1 ? ` — ROUND ${gameRound} OF ${totalRounds}` : ''}
         </h2>
         <p className="osd-text" style={{ color: '#aaa', marginBottom: 20 }}>
           One word each about the tape you watched. {room.settings.wordsPerPlayer} word
           {room.settings.wordsPerPlayer === 1 ? '' : 's'} per deck, 10 seconds a turn.
         </p>
+
+        {accusedIds.length > 0 && (
+          <div className="word-phase-banner" style={{ display: 'block', marginBottom: 20 }}>
+            ⛔ {accusedNames.toUpperCase()} EJECTED — ROLE SEALED UNTIL THE FINAL COUNT
+          </div>
+        )}
+
+        {amAccused && (
+          <div className="word-phase-banner" style={{ display: 'block', marginBottom: 20 }}>
+            👁️ YOU ARE OUT OF PLAY — WATCH THE REST UNFOLD
+          </div>
+        )}
 
         {/* Whose turn it is + the countdown */}
         <div className="brutal-card" style={{ marginBottom: 20, textAlign: 'center' }}>
@@ -87,19 +109,21 @@ export function WordsScreen({ room, socketId, code, words, turnState, actions }:
             {room.players.map((p) => {
               const used = turnState?.wordsUsed?.[p.id] ?? 0;
               const done = used >= room.settings.wordsPerPlayer;
+              const out = accusedIds.includes(p.id);
               return (
                 <div
                   className="word-chip"
                   key={p.id}
                   style={{
-                    opacity: done ? 0.5 : 1,
+                    opacity: out ? 0.35 : done ? 0.5 : 1,
+                    textDecoration: out ? 'line-through' : undefined,
                     borderColor: p.id === activeId ? 'var(--neon-green)' : undefined,
                   }}
                 >
                   <span className="word-chip-author">{p.avatar}</span>
                   <span className="word-chip-word">
                     {p.name}
-                    {done ? ' ✓' : ''}
+                    {out ? ' ⛔' : done ? ' ✓' : ''}
                   </span>
                 </div>
               );

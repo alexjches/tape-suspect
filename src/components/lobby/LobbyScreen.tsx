@@ -21,6 +21,12 @@ const MAX_PLAYERS = 10;
 // Genre order for the OSD's ‹ › stepper, Custom included (section 4).
 const GENRE_IDS = Object.keys(VIDEO_CATEGORIES);
 
+// Section 3: the 2-suspect mode unlocks at 7 players.
+const TWO_IMPOSTER_MIN_PLAYERS = 7;
+
+// .osd-menu-btn inverts on hover; this is the same treatment held on.
+const activeOsdBtn: React.CSSProperties = { background: '#fff', color: '#0000aa' };
+
 // Console glow colours by seat, matching DeliberationScreen so a player keeps
 // the same channel colour from lobby through to the vote.
 const CHANNEL_COLORS = [
@@ -92,6 +98,8 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
     : 'LINE-1 (CUSTOM)';
   const maxPlayers = room.settings.maxPlayers;
   const chatType = room.settings.chatType ?? 'text';
+  const imposterCount = room.settings.imposterCount ?? 1;
+  const twoImpostersUnlocked = room.players.length >= TWO_IMPOSTER_MIN_PLAYERS;
 
   /** Steps the genre through the §4 list, wrapping at both ends. */
   function cycleGenre(step: number) {
@@ -361,13 +369,58 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
               )}
             </div>
 
-            {/* Pinned to 1 for Phase 1 (section 16). The 2-imposter option
-                unlocks at 7+ players and needs the two-round word/vote
-                structure from section 3. */}
+            {/* Section 3: 2 suspects unlocks at 7 players and runs two full
+                word+vote rounds instead of one. */}
             <div className="osd-menu-row">
               <span>SUSPECTS:</span>
-              <span style={{ color: 'var(--neon-yellow)' }}>1 PLAYER</span>
+              {isHost ? (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button
+                    id="imposters-1-btn"
+                    className="osd-menu-btn"
+                    style={imposterCount === 1 ? activeOsdBtn : undefined}
+                    onClick={() => actions.updateSettings(code, { imposterCount: 1 })}
+                  >
+                    1
+                  </button>
+                  <button
+                    id="imposters-2-btn"
+                    className="osd-menu-btn"
+                    style={imposterCount === 2 ? activeOsdBtn : undefined}
+                    disabled={!twoImpostersUnlocked}
+                    title={
+                      twoImpostersUnlocked
+                        ? 'Two suspects, two word-and-vote rounds'
+                        : `Unlocks at ${TWO_IMPOSTER_MIN_PLAYERS} players`
+                    }
+                    onClick={() => actions.updateSettings(code, { imposterCount: 2 })}
+                  >
+                    2
+                  </button>
+                </span>
+              ) : (
+                <span style={{ color: 'var(--neon-yellow)' }}>
+                  {imposterCount} PLAYER{imposterCount === 1 ? '' : 'S'}
+                </span>
+              )}
             </div>
+
+            {imposterCount === 2 && (
+              <div
+                className="osd-text"
+                style={{ fontSize: '0.7rem', color: '#aaa', padding: '0 4px 6px' }}
+              >
+                TWO ROUNDS: WORDS → VOTE → WORDS → VOTE. BOTH SUSPECTS REVEALED AT THE END.
+              </div>
+            )}
+            {!twoImpostersUnlocked && isHost && (
+              <div
+                className="osd-text"
+                style={{ fontSize: '0.7rem', color: '#666', padding: '0 4px 6px' }}
+              >
+                2 SUSPECTS UNLOCKS AT {TWO_IMPOSTER_MIN_PLAYERS} DECKS.
+              </div>
+            )}
 
             <div className="osd-menu-row">
               <span>MAX DECKS:</span>

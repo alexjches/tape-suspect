@@ -20,6 +20,10 @@ import {
   markReadyToAdvance,
   allReadyToAdvance,
   connectedPlayers,
+  activePlayers,
+  totalGameRounds,
+  beginNextGameRound,
+  pickImposters,
   beginWordPhase,
   recordWord,
   playerFinishedTurn,
@@ -57,6 +61,14 @@ const BASE_COINS = 50;
 const CREW_WIN_BONUS = 25;
 const IMPOSTER_WIN_BONUS = 50;
 
+// A 2-imposter game pays on how many of the two were caught (section 3), not
+// on a win/lose flip. Indexed by imposters caught: 0, 1, both.
+const TWO_IMPOSTER_CREW_TOTALS = [50, 100, 150];
+const TWO_IMPOSTER_SUSPECT_TOTALS = [150, 75, 50];
+
+// Section 3: 2 imposters unlock at 7+ players, mirroring Among Us.
+const TWO_IMPOSTER_MIN_PLAYERS = 7;
+
 function sanitizeRoom(room: RoomState) {
   // Never send video URLs or roles to clients. URLs go out individually in
   // game:assigned; roles are revealed only in game:results (section 3).
@@ -64,6 +76,10 @@ function sanitizeRoom(room: RoomState) {
     code: room.code,
     hostId: room.hostId,
     phase: room.phase,
+    // Safe to broadcast: who was accused in round 1, not what they were.
+    gameRound: room.gameRound,
+    totalRounds: totalGameRounds(room),
+    accusedIds: room.accusedIds,
     players: room.players.map((p) => ({
       id: p.id,
       name: p.name,
@@ -139,7 +155,15 @@ function startReadyGrace(room: RoomState, io: Server) {
 function startWordPhase(room: RoomState, io: Server) {
   clearRoomTimer(room.code);
   beginWordPhase(room);
+  emitWordPhaseStart(room, io);
+}
 
+/**
+ * Announces a word phase and starts its clock. Split out from startWordPhase
+ * because round 2 of a 2-imposter game enters through beginNextGameRound,
+ * which has already set the turn order up.
+ */
+function emitWordPhaseStart(room: RoomState, io: Server) {
   io.to(room.code).emit('game:wordPhaseStart', {
     ...sanitizeRoom(room),
     turnOrder: room.turnOrder,
@@ -224,7 +248,13 @@ function startDeliberationTimer(room: RoomState, io: Server) {
   });
 }
 
-/** Resolves the ballot: either an accusation, or another re-vote round. */
+/**
+ * Resolves the ballot: a re-vote, the next game round, or results.
+ *
+ * In a 2-imposter game (section 3) the first accusation does not end the game
+ * — it removes the accused from active play and opens word round 2. Nothing
+ * about their role goes out with it.
+ */
 function concludeVote(room: RoomState, io: Server) {
   const outcome = resolveVote(room);
 
@@ -245,15 +275,41 @@ function concludeVote(room: RoomState, io: Server) {
     return;
   }
 
-  finalizeResults(room, io, outcome.accusedId);
+  // The deadlock named exactly the imposters: both count as caught.
+  if (outcome.kind === 'allImpostersCaught') {
+    console.log(`[Vote] ${room.code} deadlocked on both suspects — crew takes it`);
+    finalizeResults(room, io, [...room.imposterIds]);
+    return;
+  }
+
+  const accused = outcome.accusedId ? [outcome.accusedId] : [];
+
+  if (room.gameRound < totalGameRounds(room)) {
+    clearRoomTimer(room.code);
+    beginNextGameRound(room, outcome.accusedId);
+    // Too few left to run a meaningful second ballot — end it here rather than
+    // opening a round nobody can win.
+    if (activePlayers(room).length < 2) {
+      finalizeResults(room, io, room.accusedIds);
+      return;
+    }
+    console.log(
+      `[Game] ${room.code} round ${room.gameRound}/${totalGameRounds(room)} — accused so far: ${room.accusedIds.join(', ') || 'nobody'}`
+    );
+    emitWordPhaseStart(room, io);
+    return;
+  }
+
+  finalizeResults(room, io, [...room.accusedIds, ...accused]);
 }
 
 function broadcastTally(room: RoomState, io: Server) {
-  const active = connectedPlayers(room);
   io.to(room.code).emit('vote:tally', {
     tally: getVoteTally(room),
     votescast: Object.keys(room.votes).length,
-    totalVoters: active.length,
+    // An accused player is out of the ballot, so they don't count toward the
+    // "everyone has voted" total either (section 3).
+    totalVoters: activePlayers(room).length,
   });
 }
 
@@ -299,8 +355,9 @@ export function registerSocketHandlers(io: Server) {
           imposterVideoUrl: data.imposterVideoUrl || '',
           maxPlayers: Math.max(MIN_PLAYERS, Math.min(MAX_PLAYERS, data.maxPlayers ?? MAX_PLAYERS)),
           wordsPerPlayer: data.wordsPerPlayer ?? 1,
-          // Phase 1 is single-imposter only (section 16); the 2-imposter mode
-          // is Phase 2 and runs a different two-round structure.
+          // Always starts at 1: a brand-new lobby has one player in it, and
+          // 2 suspects only unlocks at 7 (section 3). The host raises it from
+          // the lobby OSD once enough people have joined.
           imposterCount: 1,
           chatType: data.chatType ?? 'text',
           // An unrecognised genre falls back to null, which means "host supplies
@@ -372,6 +429,7 @@ export function registerSocketHandlers(io: Server) {
         imposterVideoUrl?: string;
         wordsPerPlayer?: number;
         maxPlayers?: number;
+        imposterCount?: number;
         chatType?: RoomSettings['chatType'];
         videoCategory?: string | null;
       }) => {
@@ -393,6 +451,17 @@ export function registerSocketHandlers(io: Server) {
             room.players.length,
             Math.min(MAX_PLAYERS, data.maxPlayers)
           );
+        }
+        if (data.imposterCount !== undefined) {
+          // Section 3: 1 by default, 2 only once the lobby has 7+ players.
+          const wanted = Math.max(1, Math.min(2, Math.round(data.imposterCount)));
+          room.settings.imposterCount =
+            wanted === 2 && room.players.length < TWO_IMPOSTER_MIN_PLAYERS ? 1 : wanted;
+          if (room.settings.imposterCount !== wanted) {
+            socket.emit('game:error', {
+              message: `2 suspects unlocks at ${TWO_IMPOSTER_MIN_PLAYERS} players`,
+            });
+          }
         }
         if (data.chatType !== undefined) room.settings.chatType = data.chatType;
         if (data.videoCategory !== undefined) {
@@ -467,6 +536,18 @@ export function registerSocketHandlers(io: Server) {
         });
         return;
       }
+      // The lobby can shrink below 7 after the host picks 2 suspects. Refuse
+      // rather than quietly demoting it — which imposter count is in play
+      // changes the whole shape of the round (section 3).
+      if (
+        room.settings.imposterCount >= 2 &&
+        room.players.length < TWO_IMPOSTER_MIN_PLAYERS
+      ) {
+        socket.emit('game:error', {
+          message: `2 suspects needs ${TWO_IMPOSTER_MIN_PLAYERS}+ players — drop it to 1 or wait`,
+        });
+        return;
+      }
 
       // Pool genres draw two distinct clips from /content/videos.json, skipping
       // anything this lobby has already seen (section 14). Custom is the one
@@ -494,12 +575,12 @@ export function registerSocketHandlers(io: Server) {
         return;
       }
 
-      // Phase 1: exactly one imposter (section 16), picked uniformly.
-      const imposter = room.players[Math.floor(Math.random() * room.players.length)];
       // resetRound clears per-round state but not roles, so assign after it.
       resetRound(room);
-      room.imposterIds = [imposter.id];
-      room.imposterId = imposter.id;
+      // Section 3: both imposters watch the same secret video, so one pick of
+      // N ids is all this needs.
+      room.imposterIds = pickImposters(room, room.settings.imposterCount);
+      room.imposterId = room.imposterIds[0];
       room.phase = 'playing';
       room.gameStartedAt = Date.now();
       room.players.forEach((p) => (p.isReady = false));
@@ -752,26 +833,44 @@ export function registerSocketHandlers(io: Server) {
 
 // ─── Results (section 9) ─────────────────────────────────────────────────────
 
-function finalizeResults(room: RoomState, io: Server, accusedId: string | null) {
+/**
+ * Closes the game and reveals everything (section 9). `accusedIds` is every
+ * player the group ejected: one in a normal game, up to two across the pair of
+ * rounds a 2-imposter game runs. Both are revealed at the same moment
+ * (section 3) — this is the first payload that carries roles at all.
+ */
+function finalizeResults(room: RoomState, io: Server, accusedIds: string[]) {
   if (room.phase === 'results') return;
 
   clearRoomTimer(room.code);
   room.phase = 'results';
 
   const imposterIds = room.imposterIds;
+  const imposterCount = imposterIds.length;
   const imposter = room.players.find((p) => p.id === room.imposterId);
-  const accusedPlayer = room.players.find((p) => p.id === accusedId);
-  const crewWins = accusedId !== null && imposterIds.includes(accusedId);
+  const nameOf = (id: string) => room.players.find((p) => p.id === id)?.name ?? 'Unknown';
+
+  const impostersCaught = imposterIds.filter((id) => accusedIds.includes(id)).length;
+  const crewWins = imposterCount > 0 && impostersCaught === imposterCount;
+  const outcome: 'crew' | 'imposter' | 'split' =
+    crewWins ? 'crew' : impostersCaught === 0 ? 'imposter' : 'split';
 
   const tally = getVoteTally(room);
+  // The last accusation is the one the results screen ejects on camera.
+  const headlineAccused = accusedIds[accusedIds.length - 1] ?? null;
 
   io.to(room.code).emit('game:results', {
     imposterId: room.imposterId,
     imposterIds,
     imposterName: imposter?.name ?? 'Unknown',
     imposterAvatar: imposter?.avatar ?? '',
-    mostVotedId: accusedId,
-    mostVotedName: accusedPlayer?.name ?? 'Nobody',
+    mostVotedId: headlineAccused,
+    mostVotedName: headlineAccused ? nameOf(headlineAccused) : 'Nobody',
+    accusedIds,
+    accusedNames: accusedIds.map(nameOf),
+    imposterCount,
+    impostersCaught,
+    outcome,
     crewWins,
     tally,
     // Both videos are safe to reveal now that voting has closed.
@@ -779,26 +878,59 @@ function finalizeResults(room: RoomState, io: Server, accusedId: string | null) 
     imposterVideoUrl: room.settings.imposterVideoUrl,
     players: room.players.map((p) => {
       const isImposter = imposterIds.includes(p.id);
-      const won = isImposter ? !crewWins : crewWins;
-      const bonus = won ? (isImposter ? IMPOSTER_WIN_BONUS : CREW_WIN_BONUS) : 0;
       return {
         id: p.id,
         name: p.name,
         avatar: p.avatar,
         votes: tally[p.id] ?? 0,
         isImposter,
-        coinReward: {
-          baseCoins: BASE_COINS,
-          bonusCoins: bonus,
-          total: BASE_COINS + bonus,
-          reasons: [
-            'Played a round',
-            ...(won ? [isImposter ? 'Imposter victory bonus!' : 'Crew victory bonus!'] : []),
-          ],
-        },
+        wasAccused: accusedIds.includes(p.id),
+        coinReward: coinsFor(isImposter, imposterCount, impostersCaught, crewWins),
       };
     }),
   });
 
-  console.log(`[Game] Results in ${room.code}: ${crewWins ? 'Crew' : 'Imposter'} wins`);
+  console.log(
+    `[Game] Results in ${room.code}: ${outcome} (${impostersCaught}/${imposterCount} caught)`
+  );
+}
+
+/**
+ * Section 9 for one imposter, section 3's table for two. The 2-imposter game
+ * doesn't pay on a win/lose flip — one of two caught pays both sides a middle
+ * amount, and every imposter gets the same regardless of which was caught.
+ */
+function coinsFor(
+  isImposter: boolean,
+  imposterCount: number,
+  impostersCaught: number,
+  crewWins: boolean
+) {
+  if (imposterCount >= 2) {
+    const caught = Math.min(impostersCaught, 2);
+    const total = isImposter
+      ? TWO_IMPOSTER_SUSPECT_TOTALS[caught]
+      : TWO_IMPOSTER_CREW_TOTALS[caught];
+    return {
+      baseCoins: BASE_COINS,
+      bonusCoins: total - BASE_COINS,
+      total,
+      reasons: [
+        'Played a round',
+        `${caught} of 2 suspects caught`,
+      ],
+    };
+  }
+
+  const won = isImposter ? !crewWins : crewWins;
+  const bonus = won ? (isImposter ? IMPOSTER_WIN_BONUS : CREW_WIN_BONUS) : 0;
+  return {
+    baseCoins: BASE_COINS,
+    bonusCoins: bonus,
+    total: BASE_COINS + bonus,
+    reasons: [
+      'Played a round',
+      ...(won ? [isImposter ? 'Imposter victory bonus!' : 'Crew victory bonus!'] : []),
+    ],
+  };
 }
