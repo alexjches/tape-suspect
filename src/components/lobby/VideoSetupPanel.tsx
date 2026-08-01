@@ -7,6 +7,7 @@ import { useState, useEffect } from 'react';
 import { RoomPublic, Preset } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
 import { isValidVideoUrl, parseVideoUrl } from '@/lib/videoParser';
+import { VIDEO_CATEGORIES, CUSTOM_CATEGORY } from '@/lib/videoCategories';
 import { PresetLibrary } from './PresetLibrary';
 
 interface Props {
@@ -77,8 +78,9 @@ export function VideoSetupPanel({ room, isHost, actions, code }: Props) {
     setSaveName('');
   }
 
-  const hasRandomVideoCategory =
-    room.settings.videoCategory && room.settings.videoCategory !== 'custom';
+  const genre = room.settings.videoCategory;
+  const hasRandomVideoCategory = !!genre && genre !== CUSTOM_CATEGORY;
+  const genreName = (genre && VIDEO_CATEGORIES[genre]?.name) || genre;
 
   const heading = (
     <h3
@@ -95,7 +97,7 @@ export function VideoSetupPanel({ room, isHost, actions, code }: Props) {
         {heading}
         <p style={{ fontWeight: 600, fontSize: '0.85rem', marginTop: 8 }}>
           Two tapes will be pulled at random from the{' '}
-          <span style={{ textTransform: 'uppercase' }}>{room.settings.videoCategory}</span> shelf
+          <span style={{ textTransform: 'uppercase' }}>{genreName}</span> shelf
           when the deck rolls.
         </p>
       </div>

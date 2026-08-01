@@ -35,7 +35,8 @@ import {
   RoomSettings,
   RoomState,
 } from './gameState';
-import { getRandomVideoPair } from '../lib/videoCategories';
+import { CUSTOM_CATEGORY, isKnownCategory } from '../lib/videoCategories';
+import { pickVideoPair, watchUrl } from './videoLibrary';
 
 // ── Phase 1 rule constants (docs/BUILD-PLAN.md) ──────────────────────
 // Lobby size 4–10 (section 20). Phase 1 ships a single imposter only
@@ -299,7 +300,9 @@ export function registerSocketHandlers(io: Server) {
           // is Phase 2 and runs a different two-round structure.
           imposterCount: 1,
           chatType: data.chatType ?? 'text',
-          videoCategory: data.videoCategory ?? null,
+          // An unrecognised genre falls back to null, which means "host supplies
+          // the URLs" — never a silent pick from some other shelf.
+          videoCategory: isKnownCategory(data.videoCategory) ? data.videoCategory! : null,
         };
 
         createRoom(code, host, settings);
@@ -374,7 +377,11 @@ export function registerSocketHandlers(io: Server) {
           room.settings.wordsPerPlayer = Math.max(1, Math.min(10, data.wordsPerPlayer));
         }
         if (data.chatType !== undefined) room.settings.chatType = data.chatType;
-        if (data.videoCategory !== undefined) room.settings.videoCategory = data.videoCategory;
+        if (data.videoCategory !== undefined) {
+          room.settings.videoCategory = isKnownCategory(data.videoCategory)
+            ? data.videoCategory!
+            : null;
+        }
         // imposterCount is deliberately not settable in Phase 1 — it is pinned
         // to 1 (section 16). The 2-imposter option unlocks in Phase 2 at 7+
         // players and needs the two-round flow from section 3.
@@ -412,13 +419,25 @@ export function registerSocketHandlers(io: Server) {
         return;
       }
 
-      // If a category is selected, pick a random video pair for this round
-      if (room.settings.videoCategory && room.settings.videoCategory !== 'custom') {
-        const randomVideo = getRandomVideoPair(room.settings.videoCategory);
-        if (randomVideo) {
-          room.settings.normalVideoUrl = randomVideo.crewmateVideoUrl;
-          room.settings.imposterVideoUrl = randomVideo.imposterVideoUrl;
+      // Pool genres draw two distinct clips from /content/videos.json, skipping
+      // anything this lobby has already seen (section 14). Custom is the one
+      // genre that keeps the host's own pair.
+      const genre = room.settings.videoCategory;
+      if (genre && genre !== CUSTOM_CATEGORY) {
+        const pair = pickVideoPair(genre, room.usedVideoIds);
+        if (!pair) {
+          socket.emit('game:error', {
+            message: `The ${genre} shelf needs at least 2 clips configured`,
+          });
+          return;
         }
+        room.settings.normalVideoUrl = watchUrl(pair.normal.youtubeId);
+        room.settings.imposterVideoUrl = watchUrl(pair.imposter.youtubeId);
+        room.usedVideoIds = pair.usedIds;
+        console.log(
+          `[Videos] ${data.code} ${genre}: ${pair.normal.id} vs ${pair.imposter.id}` +
+            (pair.recycled ? ' (pool exhausted, history recycled)' : '')
+        );
       }
 
       if (!room.settings.normalVideoUrl || !room.settings.imposterVideoUrl) {

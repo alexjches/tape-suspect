@@ -8,7 +8,7 @@ import { useSession, signOut } from 'next-auth/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getSocket } from '@/lib/socket';
 import { RoomPublic, ChatType } from '@/types';
-import { VIDEO_CATEGORIES } from '@/lib/videoCategories';
+import { VIDEO_CATEGORIES, CUSTOM_CATEGORY } from '@/lib/videoCategories';
 import { isValidVideoUrl } from '@/lib/videoParser';
 import { useShop } from '@/hooks/useShop';
 import { CrtShell } from '@/components/vhs/CrtShell';
@@ -133,7 +133,7 @@ function DashboardContent() {
   );
 
   const customValid =
-    category !== 'custom' ||
+    category !== CUSTOM_CATEGORY ||
     (isValidVideoUrl(crewUrl) && isValidVideoUrl(imposterUrl));
 
   const hostRoom = useCallback(() => {
@@ -151,9 +151,9 @@ function DashboardContent() {
         userId,
         isPublic,
         chatType,
-        videoCategory: category === 'custom' ? null : category,
-        normalVideoUrl: category === 'custom' ? crewUrl : '',
-        imposterVideoUrl: category === 'custom' ? imposterUrl : '',
+        videoCategory: category,
+        normalVideoUrl: category === CUSTOM_CATEGORY ? crewUrl : '',
+        imposterVideoUrl: category === CUSTOM_CATEGORY ? imposterUrl : '',
       },
       (res: { success: boolean; code?: string; error?: string }) => {
         if (res.success && res.code) router.push(`/room/${res.code}`);
@@ -513,6 +513,9 @@ function DashboardContent() {
                           className={`btn-brutal option-btn category-btn${
                             category === c.id ? ' active' : ''
                           }`}
+                          // Five genres in a two-column grid: let Custom take
+                          // the orphan row rather than leaving a hole.
+                          style={c.isCustom ? { gridColumn: '1 / -1' } : undefined}
                           onClick={() => setCategory(c.id)}
                         >
                           <span style={{ fontSize: '1.3rem', display: 'block', marginBottom: 2 }}>
@@ -521,21 +524,10 @@ function DashboardContent() {
                           {c.name.toUpperCase()}
                         </button>
                       ))}
-                      <button
-                        className={`btn-brutal option-btn category-btn${
-                          category === 'custom' ? ' active' : ''
-                        }`}
-                        onClick={() => setCategory('custom')}
-                      >
-                        <span style={{ fontSize: '1.3rem', display: 'block', marginBottom: 2 }}>
-                          ⚙️
-                        </span>
-                        CUSTOM URL
-                      </button>
                     </div>
                   </div>
 
-                  {category === 'custom' && (
+                  {category === CUSTOM_CATEGORY && (
                     <div
                       style={{
                         display: 'flex',

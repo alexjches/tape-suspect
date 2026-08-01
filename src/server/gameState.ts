@@ -64,6 +64,11 @@ export interface RoomState {
   voteRound: number;                        // 1, then 2+ for tie re-votes
   revoteCandidates: string[] | null;        // non-null while a tie is unresolved
 
+  // ── No-repeat on replay, section 14 ──
+  // YouTube IDs already shown in this lobby session. Survives resetRound so a
+  // Replay pulls fresh clips; dies with the room, which is the session.
+  usedVideoIds: string[];
+
   createdAt: number;
   gameStartedAt: number | null;
 }
@@ -99,6 +104,7 @@ export function createRoom(code: string, host: Player, settings: RoomSettings): 
     imposterIds: [],
     settings,
     ...freshRoundState(),
+    usedVideoIds: [],
     createdAt: Date.now(),
     gameStartedAt: null,
   };

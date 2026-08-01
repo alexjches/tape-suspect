@@ -60,6 +60,10 @@ Roles are covered by the same rule: `game:assigned` carries **only** `videoUrl`.
 
 **Type duplication is intentional.** `src/server/gameState.ts` holds the full server-side `RoomState` (URLs, imposter IDs, votes); `src/types/index.ts` holds the sanitized `RoomPublic` the client sees. Changing a room field means touching both plus `sanitizeRoom()`.
 
+**Video content is split in two, and the split is load-bearing.** `src/lib/videoCategories.ts` is client-safe genre *metadata* only — id, name, icon, blurb — and is what `/dashboard` and the lobby render. The clips live in `content/videos.json` (spec §14: bare YouTube IDs, 10–15 per genre, `label`/`tags` are internal notes never sent to players) and are loaded by `src/server/videoLibrary.ts`, which is **server-only**: the pool is the set the imposter's clip is drawn from, so importing it from a component would ship the answer sheet to the browser. `videoLibrary` re-reads the JSON whenever its mtime changes, so links can be added without restarting the server, and keeps the last good copy if an edit leaves the file unparseable.
+
+`pickVideoPair()` takes the round's genre plus `room.usedVideoIds` and returns two distinct clips, excluding anything the lobby has already seen. `usedVideoIds` lives on `RoomState`, is deliberately **not** in `freshRoundState()` — it must survive Replay — and dies with the room, which is what "resets when the lobby closes" means. When a genre runs dry the helper drops that genre's history and returns `recycled: true`; other genres' history survives, so switching genre mid-lobby doesn't reset the one you were playing. `custom` is the one genre with no pool: those URLs come from the host and stay on the room.
+
 **Video playback** — `src/components/game/VideoPlayer.tsx` handles YouTube (IFrame API, loaded once behind a global `window._ytReady` guard), Vimeo (postMessage), and MP4 (`<video>`) behind one imperative `play()`/`pause()` handle; `src/lib/videoParser.ts` picks the type. Sync works by each client emitting `game:syncReady` on load, then the server broadcasting `game:play` with a `playAt` timestamp ~1s out that clients schedule against. Players render with `pointerEvents: 'none'` and no controls. The lockdown player vars the spec asks for in §5 (`controls=0`, `disablekb=1`, `fs=0`, `modestbranding=1`, `rel=0`) are already set.
 
 **Coins/shop are client-side only, and cosmetics are inert.** `src/hooks/useShop.ts` reads/writes `localStorage` (`imposter_coins`, `imposter_shop_owned`, `imposter_shop_equipped`). The server computes a `coinReward` in `game:results` but nothing persists it, so clearing site data wipes the wallet. `/shop` sells the three cosmetic slots from the prototype — tape skins, VCR skins, tape labels (`SHOP_ITEMS`) — and equipping writes to localStorage, but **nothing reads `equipped` outside the shop**: a bought skin does not yet repaint the lobby consoles or the results cassette. Wiring that up belongs with the Phase 3 currency move. Guest identity is likewise localStorage (`imposter_guest_name`, `imposter_guest_avatar`).
@@ -72,14 +76,15 @@ Verified against `src/` as of this file's writing. These are bugs-against-spec, 
 
 Phase 1 (spec §16) closed most of the original gaps. **Fixed and verified:** role secrecy, single imposter, lobby size 4–10, reward values, combined 90s deliberation window, server-authoritative vote timer, split-vote re-vote and tie-break loops, per-player Ready Check, and the `none` comms mode.
 
+Phase 2 so far: the full genre list (§4) and the `/content/videos.json` config with per-lobby no-repeat (§14) — see "Video content" above.
+
 `ChatType` is `'text' | 'voice' | 'video' | 'none'`, but the host form on `/dashboard` deliberately offers only a text on/off toggle (`'text'` or `'none'`) — §16 scopes Phase 1 to "text chat only (+ 'None' comms option)". The other two values stay in the union and in the lobby-list pill lookup so Phase 2 only has to add the buttons back; don't delete them.
 
 Still outstanding:
 
 | Area | Spec (`docs/BUILD-PLAN.md`) | Code today | Phase |
 |---|---|---|---|
-| Genres | Sports, Memes, Video Games, Music, Custom (§4) | `videoCategories.ts` has memes, sports, music | 2 |
-| Video config | `/content/videos.json`, bare YouTube IDs, 10–15 per genre, no-repeat per lobby session (§14) | Hardcoded full-URL pairs in a `.ts` file, 2 pairs per genre, no no-repeat | 2 |
+| Custom genre | A host who picks Custom cannot play that round — they already know the answers (§4) | Custom is selectable but the host still plays | 2 |
 | 2-imposter flow | Two word+vote rounds, accused removed between them (§3) | Not implemented; `imposterCount` pinned to 1 | 2 |
 | Voting visibility | Host picks Public or Anonymous (§4) | Always broadcasts a live tally | 3 |
 | Currency | Persistent, account-bound (§9, §11) | localStorage only (`useShop.ts`) | 3 |

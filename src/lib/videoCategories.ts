@@ -1,85 +1,65 @@
-export interface VideoItem {
-  id: string;
-  name: string;
-  crewmateVideoUrl: string;
-  imposterVideoUrl: string;
-}
+// src/lib/videoCategories.ts
+// Genre metadata — the display side of the genre list in docs/BUILD-PLAN.md
+// section 4. Client-safe: no filesystem access, no video IDs.
+//
+// The clips themselves live in /content/videos.json and are loaded server-side
+// by src/server/videoLibrary.ts. Keeping the two apart is deliberate: the pool
+// is what the imposter is picked out of, so it must never reach a browser
+// bundle, and the config file stays editable without touching game logic
+// (section 14).
+
+/** Marks the host-supplied-links genre. Has no pool in videos.json. */
+export const CUSTOM_CATEGORY = 'custom';
 
 export interface VideoCategory {
   id: string;
   name: string;
   icon: string;
   description: string;
-  items: VideoItem[];
+  /** True for the one genre whose links come from the host, not the config. */
+  isCustom?: boolean;
 }
 
+// Order follows section 4: Sports, Memes, Video Games, Music, Custom.
 export const VIDEO_CATEGORIES: Record<string, VideoCategory> = {
-  memes: {
-    id: 'memes',
-    name: 'Memes',
-    icon: '😂',
-    description: 'Viral clips and funny moments',
-    items: [
-      {
-        id: 'meme_1',
-        name: 'Rick Roll vs Trololo',
-        crewmateVideoUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-        imposterVideoUrl: 'https://www.youtube.com/watch?v=2Z4m4lnjxkY',
-      },
-      {
-        id: 'meme_2',
-        name: 'Numa Numa vs Keyboard Cat',
-        crewmateVideoUrl: 'https://www.youtube.com/watch?v=KmtzQCSh6xk',
-        imposterVideoUrl: 'https://www.youtube.com/watch?v=J---aiyznGQ',
-      }
-    ],
-  },
   sports: {
     id: 'sports',
     name: 'Sports',
     icon: '🏆',
-    description: 'Iconic sporting moments',
-    items: [
-      {
-        id: 'sport_1',
-        name: 'Messi Goal vs Ronaldo Goal',
-        crewmateVideoUrl: 'https://www.youtube.com/watch?v=PSanjqYOM_4',
-        imposterVideoUrl: 'https://www.youtube.com/watch?v=sB1o1vO383g',
-      },
-      {
-        id: 'sport_2',
-        name: 'Buzzer Beater vs Strikeout',
-        crewmateVideoUrl: 'https://www.youtube.com/watch?v=v2bEYOE_GJU',
-        imposterVideoUrl: 'https://www.youtube.com/watch?v=f7n6rOof-4Y',
-      }
-    ],
+    description: 'Goals, dunks and iconic sporting moments',
+  },
+  memes: {
+    id: 'memes',
+    name: 'Memes',
+    icon: '😂',
+    description: 'Viral clips and internet classics',
+  },
+  video_games: {
+    id: 'video_games',
+    name: 'Video Games',
+    icon: '🎮',
+    description: 'Trailers and reveals from big-name games',
   },
   music: {
     id: 'music',
     name: 'Music Videos',
     icon: '🎵',
     description: 'Hit songs and music clips',
-    items: [
-      {
-        id: 'music_1',
-        name: 'Thriller vs Billie Jean',
-        crewmateVideoUrl: 'https://www.youtube.com/watch?v=sOnqjkJTMaA',
-        imposterVideoUrl: 'https://www.youtube.com/watch?v=Zi_XLOBDo_Y',
-      },
-      {
-        id: 'music_2',
-        name: 'Bohemian Rhapsody vs We Will Rock You',
-        crewmateVideoUrl: 'https://www.youtube.com/watch?v=fJ9rUzIMcZQ',
-        imposterVideoUrl: 'https://www.youtube.com/watch?v=-tJYN-eG1zk',
-      }
-    ],
-  }
+  },
+  [CUSTOM_CATEGORY]: {
+    id: CUSTOM_CATEGORY,
+    name: 'Custom URL',
+    icon: '⚙️',
+    description: 'Host pastes their own pair of links for the round',
+    isCustom: true,
+  },
 };
 
-export function getRandomVideoPair(categoryId: string): VideoItem | null {
-  const category = VIDEO_CATEGORIES[categoryId];
-  if (!category || category.items.length === 0) return null;
-  
-  const randomIndex = Math.floor(Math.random() * category.items.length);
-  return category.items[randomIndex];
+/** The genres backed by a pool in /content/videos.json. */
+export const POOL_CATEGORY_IDS = Object.values(VIDEO_CATEGORIES)
+  .filter((c) => !c.isCustom)
+  .map((c) => c.id);
+
+export function isKnownCategory(id: string | null | undefined): boolean {
+  return !!id && id in VIDEO_CATEGORIES;
 }

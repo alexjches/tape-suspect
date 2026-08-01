@@ -10,6 +10,7 @@ import { useState } from 'react';
 import { RoomPublic } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
 import { VideoSetupPanel } from './VideoSetupPanel';
+import { VIDEO_CATEGORIES, CUSTOM_CATEGORY } from '@/lib/videoCategories';
 import { useRouter } from 'next/navigation';
 
 // Section 20: lobby size is 4–10. Mirrors MIN_PLAYERS in socketHandlers.ts —
@@ -57,8 +58,8 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
     actions.updateSettings(code, { wordsPerPlayer: clamped });
   }
 
-  const hasRandomVideoCategory =
-    room.settings.videoCategory && room.settings.videoCategory !== 'custom';
+  const genre = room.settings.videoCategory;
+  const hasRandomVideoCategory = !!genre && genre !== CUSTOM_CATEGORY;
   const enoughPlayers = room.players.length >= MIN_PLAYERS;
   const videosReady =
     hasRandomVideoCategory || (room.settings.hasNormalVideo && room.settings.hasImposterVideo);
@@ -260,7 +261,7 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
               <span>VIDEO SOURCE:</span>
               <span style={{ color: 'var(--neon-yellow)' }}>
                 {hasRandomVideoCategory
-                  ? String(room.settings.videoCategory).toUpperCase()
+                  ? (VIDEO_CATEGORIES[genre!]?.name ?? genre!).toUpperCase()
                   : 'LINE-1 (CUSTOM)'}
               </span>
             </div>

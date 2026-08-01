@@ -105,8 +105,13 @@ src/
 ├── lib/                    # socket, prisma, auth, avatars, videoParser, videoCategories
 └── server/
     ├── gameState.ts        # in-memory room store, turn order, vote resolution
+    ├── videoLibrary.ts     # loads content/videos.json, picks each round's pair
     └── socketHandlers.ts   # every Socket.io event
 ```
+
+Genre clips live outside `src/` in **`content/videos.json`** — bare YouTube IDs, 10–15
+per genre — so links can be added without touching game logic. The server re-reads it
+when the file changes; no restart needed.
 
 Two separate stores, deliberately: **game state is in-memory** (a `Map` in `gameState.ts`, lost on restart), while **Prisma holds only durable data** — users, sessions, video presets.
 
