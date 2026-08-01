@@ -124,7 +124,7 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
         {/* ── Left: connected consoles ───────────────────────────── */}
         <div>
           <h2 className="brutal-title" style={{ fontSize: '1.8rem', marginBottom: 20 }}>
-            📼 CONNECTED VCRS ({room.players.length}/{room.settings.maxPlayers})
+            📼 CONNECTED PLAYERS ({room.players.length}/{room.settings.maxPlayers})
           </h2>
 
           {error && (

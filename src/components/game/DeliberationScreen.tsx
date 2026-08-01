@@ -133,7 +133,7 @@ export function DeliberationScreen({
                   ? 'TIE DETECTED — recast, restricted to the tied players'
                   : myVote
                   ? 'Vote locked in. Keep talking until the tape runs out.'
-                  : 'Click a VCR console to cast your suspect vote'}
+                  : "Click a player's console to cast your suspect vote"}
               </p>
             </div>
           </div>
