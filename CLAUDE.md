@@ -76,7 +76,7 @@ Verified against `src/` as of this file's writing. These are bugs-against-spec, 
 
 Phase 1 (spec §16) closed most of the original gaps. **Fixed and verified:** role secrecy, single imposter, lobby size 4–10, reward values, combined 90s deliberation window, server-authoritative vote timer, split-vote re-vote and tie-break loops, per-player Ready Check, and the `none` comms mode.
 
-Phase 2 so far: the full genre list (§4) and the `/content/videos.json` config with per-lobby no-repeat (§14) — see "Video content" above.
+Phase 2 so far: the full genre list (§4), the `/content/videos.json` config with per-lobby no-repeat (§14), and the host controls from §4 — manual host transfer (`room:transferHost`) plus mid-lobby settings changes. `room:updateSettings` is now guarded to the `lobby` phase, because §4 scopes those changes to *between* rounds; changing genre clears both loaded URLs so a Custom lobby cannot start on the previous round's pool clips.
 
 `ChatType` is `'text' | 'voice' | 'video' | 'none'`, but the host form on `/dashboard` deliberately offers only a text on/off toggle (`'text'` or `'none'`) — §16 scopes Phase 1 to "text chat only (+ 'None' comms option)". The other two values stay in the union and in the lobby-list pill lookup so Phase 2 only has to add the buttons back; don't delete them.
 
@@ -89,7 +89,6 @@ Still outstanding:
 | Voting visibility | Host picks Public or Anonymous (§4) | Always broadcasts a live tally | 3 |
 | Currency | Persistent, account-bound (§9, §11) | localStorage only (`useShop.ts`) | 3 |
 | Accounts | Email / Google / **Apple**; Discord later (§11) | Email / Google / **Discord**; no Apple | 2 |
-| Host controls | Manual host transfer, mid-lobby settings changes (§4) | Auto-transfer on host leave only | 2 |
 | Reconnect | — | Identity is `socket.id`, so a refresh makes a new player and drops you from the round | — |
 | Cosmetics | Bought skins change how you look in game (§10) | Shop UI + ownership work; `equipped` is never read outside `/shop` | 3 |
 | Voice/video lobbies | Host can pick voice or video chat, with mic/cam toggles (§4, §5) | `ChatType` and `DeliberationScreen` handle both, but the host form only offers text on/off — correct for Phase 1, which §16 scopes to "text chat only (+ 'None')" | 2 |

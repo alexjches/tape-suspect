@@ -13,9 +13,13 @@ import { VideoSetupPanel } from './VideoSetupPanel';
 import { VIDEO_CATEGORIES, CUSTOM_CATEGORY } from '@/lib/videoCategories';
 import { useRouter } from 'next/navigation';
 
-// Section 20: lobby size is 4–10. Mirrors MIN_PLAYERS in socketHandlers.ts —
-// the server rejects an early start regardless, this just greys the button.
+// Section 20: lobby size is 4–10. Mirrors MIN_PLAYERS/MAX_PLAYERS in
+// socketHandlers.ts — the server clamps regardless, this just greys buttons.
 const MIN_PLAYERS = 4;
+const MAX_PLAYERS = 10;
+
+// Genre order for the OSD's ‹ › stepper, Custom included (section 4).
+const GENRE_IDS = Object.keys(VIDEO_CATEGORIES);
 
 // Console glow colours by seat, matching DeliberationScreen so a player keeps
 // the same channel colour from lobby through to the vote.
@@ -31,6 +35,23 @@ const CHANNEL_COLORS = [
   '#4cc9f0',
   '#fca311',
 ];
+
+// The two host-only badges clipped to the top edge of a player's console.
+const consoleBadgeStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: -12,
+  zIndex: 11,
+  width: 22,
+  height: 22,
+  borderRadius: 6,
+  border: '2px solid #000',
+  color: '#000',
+  fontFamily: 'var(--font-osd)',
+  fontSize: '0.7rem',
+  lineHeight: 1,
+  cursor: 'pointer',
+  boxShadow: '2px 2px 0px #000',
+};
 
 interface Props {
   room: RoomPublic;
@@ -58,8 +79,27 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
     actions.updateSettings(code, { wordsPerPlayer: clamped });
   }
 
+  function applyMaxPlayers(val: number) {
+    // The server clamps too; this just keeps the buttons honest.
+    const clamped = Math.max(MIN_PLAYERS, room.players.length, Math.min(MAX_PLAYERS, val));
+    actions.updateSettings(code, { maxPlayers: clamped });
+  }
+
   const genre = room.settings.videoCategory;
   const hasRandomVideoCategory = !!genre && genre !== CUSTOM_CATEGORY;
+  const genreLabel = hasRandomVideoCategory
+    ? (VIDEO_CATEGORIES[genre!]?.name ?? genre!).toUpperCase()
+    : 'LINE-1 (CUSTOM)';
+  const maxPlayers = room.settings.maxPlayers;
+  const chatType = room.settings.chatType ?? 'text';
+
+  /** Steps the genre through the §4 list, wrapping at both ends. */
+  function cycleGenre(step: number) {
+    const ids = GENRE_IDS;
+    const current = ids.indexOf(genre ?? CUSTOM_CATEGORY);
+    const next = ids[(current + step + ids.length) % ids.length];
+    actions.updateSettings(code, { videoCategory: next });
+  }
   const enoughPlayers = room.players.length >= MIN_PLAYERS;
   const videosReady =
     hasRandomVideoCategory || (room.settings.hasNormalVideo && room.settings.hasImposterVideo);
@@ -117,24 +157,26 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
                       title="Eject player"
                       onClick={() => actions.kick(code, player.id)}
                       style={{
-                        position: 'absolute',
-                        top: -12,
+                        ...consoleBadgeStyle,
                         left: 8,
-                        zIndex: 11,
-                        width: 22,
-                        height: 22,
-                        borderRadius: 6,
-                        border: '2px solid #000',
                         background: 'var(--neon-magenta)',
                         color: '#fff',
-                        fontFamily: 'var(--font-osd)',
-                        fontSize: '0.7rem',
-                        lineHeight: 1,
-                        cursor: 'pointer',
-                        boxShadow: '2px 2px 0px #000',
                       }}
                     >
                       ✕
+                    </button>
+                  )}
+
+                  {/* Manual host transfer, section 4 — the host can hand the
+                      lobby over rather than ending it by leaving. */}
+                  {isHost && !isMe && online && (
+                    <button
+                      id={`make-host-${player.id}`}
+                      title={`Make ${player.name} the host`}
+                      onClick={() => actions.transferHost(code, player.id)}
+                      style={{ ...consoleBadgeStyle, right: 8, background: 'var(--neon-yellow)' }}
+                    >
+                      ♛
                     </button>
                   )}
 
@@ -257,13 +299,35 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
           <div className="osd-menu">
             <div className="osd-menu-title">--- Camcorder Config ---</div>
 
+            {/* Section 4: every row below is live for the host between rounds
+                — no need to close the lobby to change the setup. */}
             <div className="osd-menu-row">
               <span>VIDEO SOURCE:</span>
-              <span style={{ color: 'var(--neon-yellow)' }}>
-                {hasRandomVideoCategory
-                  ? (VIDEO_CATEGORIES[genre!]?.name ?? genre!).toUpperCase()
-                  : 'LINE-1 (CUSTOM)'}
-              </span>
+              {isHost ? (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button
+                    id="genre-prev-btn"
+                    className="osd-menu-btn"
+                    onClick={() => cycleGenre(-1)}
+                  >
+                    ‹
+                  </button>
+                  <span
+                    style={{ color: 'var(--neon-yellow)', minWidth: 96, textAlign: 'center' }}
+                  >
+                    {genreLabel}
+                  </span>
+                  <button
+                    id="genre-next-btn"
+                    className="osd-menu-btn"
+                    onClick={() => cycleGenre(1)}
+                  >
+                    ›
+                  </button>
+                </span>
+              ) : (
+                <span style={{ color: 'var(--neon-yellow)' }}>{genreLabel}</span>
+              )}
             </div>
 
             <div className="osd-menu-row">
@@ -306,17 +370,68 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
             </div>
 
             <div className="osd-menu-row">
+              <span>MAX DECKS:</span>
+              {isHost ? (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button
+                    id="max-players-minus-btn"
+                    className="osd-menu-btn"
+                    disabled={maxPlayers <= Math.max(MIN_PLAYERS, room.players.length)}
+                    onClick={() => applyMaxPlayers(maxPlayers - 1)}
+                  >
+                    −
+                  </button>
+                  <span style={{ color: 'var(--neon-yellow)', minWidth: 16, textAlign: 'center' }}>
+                    {maxPlayers}
+                  </span>
+                  <button
+                    id="max-players-plus-btn"
+                    className="osd-menu-btn"
+                    disabled={maxPlayers >= MAX_PLAYERS}
+                    onClick={() => applyMaxPlayers(maxPlayers + 1)}
+                  >
+                    +
+                  </button>
+                </span>
+              ) : (
+                <span style={{ color: 'var(--neon-yellow)' }}>{maxPlayers}</span>
+              )}
+            </div>
+
+            {/* Phase 1 chat scope is text on/off (§16); voice and video return
+                to this row in Phase 2 alongside the host form buttons. */}
+            <div className="osd-menu-row">
               <span>AUDIO OUT:</span>
-              <span style={{ color: 'var(--neon-yellow)' }}>
-                {(room.settings.chatType ?? 'text').toUpperCase()}
-              </span>
+              {isHost ? (
+                <button
+                  id="chat-toggle-btn"
+                  className="osd-menu-btn"
+                  onClick={() =>
+                    actions.updateSettings(code, { chatType: chatType === 'none' ? 'text' : 'none' })
+                  }
+                >
+                  {chatType.toUpperCase()}
+                </button>
+              ) : (
+                <span style={{ color: 'var(--neon-yellow)' }}>{chatType.toUpperCase()}</span>
+              )}
             </div>
 
             <div className="osd-menu-row">
               <span>TAPE MODE:</span>
-              <span style={{ color: 'var(--neon-yellow)' }}>
-                {room.settings.isPublic ? 'SP (PUBLIC)' : 'EP (PRIVATE)'}
-              </span>
+              {isHost ? (
+                <button
+                  id="visibility-toggle-btn"
+                  className="osd-menu-btn"
+                  onClick={() => actions.updateSettings(code, { isPublic: !room.settings.isPublic })}
+                >
+                  {room.settings.isPublic ? 'SP (PUBLIC)' : 'EP (PRIVATE)'}
+                </button>
+              ) : (
+                <span style={{ color: 'var(--neon-yellow)' }}>
+                  {room.settings.isPublic ? 'SP (PUBLIC)' : 'EP (PRIVATE)'}
+                </span>
+              )}
             </div>
           </div>
         </div>

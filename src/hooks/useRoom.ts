@@ -264,11 +264,20 @@ export function useRoom(code: string | null) {
           normalVideoUrl?: string;
           imposterVideoUrl?: string;
           wordsPerPlayer?: number;
+          maxPlayers?: number;
           chatType?: ChatType;
           videoCategory?: string | null;
         }
       ) => {
         socket.emit('room:updateSettings', { code, ...settings });
+      },
+      [socket]
+    ),
+
+    /** Hand the lobby to another player (section 4). Host only. */
+    transferHost: useCallback(
+      (code: string, targetId: string) => {
+        socket.emit('room:transferHost', { code, targetId });
       },
       [socket]
     ),

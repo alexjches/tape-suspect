@@ -30,7 +30,9 @@ import {
   pendingVoters,
   resolveVote,
   beginRevote,
+  transferHost,
   DELIBERATION_SECONDS,
+  HostTransferRejection,
   Player,
   RoomSettings,
   RoomState,
@@ -273,6 +275,7 @@ export function registerSocketHandlers(io: Server) {
           normalVideoUrl?: string;
           imposterVideoUrl?: string;
           wordsPerPlayer?: number;
+          maxPlayers?: number;
           chatType?: RoomSettings['chatType'];
           videoCategory?: string | null;
         },
@@ -294,7 +297,7 @@ export function registerSocketHandlers(io: Server) {
           isPublic: data.isPublic,
           normalVideoUrl: data.normalVideoUrl || '',
           imposterVideoUrl: data.imposterVideoUrl || '',
-          maxPlayers: MAX_PLAYERS,
+          maxPlayers: Math.max(MIN_PLAYERS, Math.min(MAX_PLAYERS, data.maxPlayers ?? MAX_PLAYERS)),
           wordsPerPlayer: data.wordsPerPlayer ?? 1,
           // Phase 1 is single-imposter only (section 16); the 2-imposter mode
           // is Phase 2 and runs a different two-round structure.
@@ -356,6 +359,10 @@ export function registerSocketHandlers(io: Server) {
     );
 
     // ─── Room: Update Settings (host only) ──────────────────────────
+    // Section 4: the host can adjust any lobby setting between rounds without
+    // closing and recreating the lobby. Between rounds is the operative part —
+    // the lobby phase guard keeps a mid-round genre swap from repointing the
+    // tapes under players who are already watching them.
     socket.on(
       'room:updateSettings',
       (data: {
@@ -364,24 +371,43 @@ export function registerSocketHandlers(io: Server) {
         normalVideoUrl?: string;
         imposterVideoUrl?: string;
         wordsPerPlayer?: number;
+        maxPlayers?: number;
         chatType?: RoomSettings['chatType'];
         videoCategory?: string | null;
       }) => {
         const room = getRoom(data.code);
         if (!room || room.hostId !== socket.id) return;
+        if (room.phase !== 'lobby') {
+          socket.emit('game:error', { message: 'Settings can only change between rounds' });
+          return;
+        }
 
         if (data.isPublic !== undefined) room.settings.isPublic = data.isPublic;
-        if (data.normalVideoUrl !== undefined) room.settings.normalVideoUrl = data.normalVideoUrl;
-        if (data.imposterVideoUrl !== undefined) room.settings.imposterVideoUrl = data.imposterVideoUrl;
         if (data.wordsPerPlayer !== undefined) {
           room.settings.wordsPerPlayer = Math.max(1, Math.min(10, data.wordsPerPlayer));
         }
+        if (data.maxPlayers !== undefined) {
+          // Never below the people already in the room, never outside 4–10 (§20).
+          room.settings.maxPlayers = Math.max(
+            MIN_PLAYERS,
+            room.players.length,
+            Math.min(MAX_PLAYERS, data.maxPlayers)
+          );
+        }
         if (data.chatType !== undefined) room.settings.chatType = data.chatType;
         if (data.videoCategory !== undefined) {
-          room.settings.videoCategory = isKnownCategory(data.videoCategory)
-            ? data.videoCategory!
-            : null;
+          const next = isKnownCategory(data.videoCategory) ? data.videoCategory! : null;
+          if (next !== room.settings.videoCategory) {
+            // A genre change invalidates whatever is loaded: leftover URLs from
+            // a pool round would otherwise let a Custom lobby start on them.
+            room.settings.normalVideoUrl = '';
+            room.settings.imposterVideoUrl = '';
+          }
+          room.settings.videoCategory = next;
         }
+        // Applied after the genre so an explicit URL in the same payload wins.
+        if (data.normalVideoUrl !== undefined) room.settings.normalVideoUrl = data.normalVideoUrl;
+        if (data.imposterVideoUrl !== undefined) room.settings.imposterVideoUrl = data.imposterVideoUrl;
         // imposterCount is deliberately not settable in Phase 1 — it is pinned
         // to 1 (section 16). The 2-imposter option unlocks in Phase 2 at 7+
         // players and needs the two-round flow from section 3.
@@ -390,6 +416,29 @@ export function registerSocketHandlers(io: Server) {
         io.emit('rooms:updated', getPublicRooms().map(sanitizeRoom));
       }
     );
+
+    // ─── Room: Transfer host (host only, section 4) ─────────────────
+    socket.on('room:transferHost', (data: { code: string; targetId: string }) => {
+      const room = getRoom(data.code);
+      if (!room) return;
+
+      const result = transferHost(room, socket.id, data.targetId);
+      if (!result.ok) {
+        const messages: Record<HostTransferRejection, string> = {
+          not_host: 'Only the host can hand over the lobby',
+          no_such_player: 'That player is not in this lobby',
+          offline: 'That player has lost signal',
+          already_host: 'They are already the host',
+        };
+        socket.emit('game:error', { message: messages[result.reason] });
+        return;
+      }
+
+      io.to(data.code).emit('room:updated', sanitizeRoom(room));
+      // The lobby list shows the host's name and avatar.
+      io.emit('rooms:updated', getPublicRooms().map(sanitizeRoom));
+      console.log(`[Room] ${data.code} host is now ${data.targetId}`);
+    });
 
     // ─── Room: Kick Player (host only) ──────────────────────────────
     socket.on('room:kick', (data: { code: string; targetId: string }) => {

@@ -142,16 +142,42 @@ export function removePlayer(code: string, socketId: string): RoomState | null {
   const room = rooms.get(code);
   if (!room) return null;
   room.players = room.players.filter((p) => p.id !== socketId);
-  // Transfer host if host left
-  if (room.hostId === socketId && room.players.length > 0) {
-    room.hostId = room.players[0].id;
-    room.players[0].isHost = true;
-  }
   if (room.players.length === 0) {
     rooms.delete(code);
     return null;
   }
+  // Host left — hand the lobby to someone who is still on the line.
+  if (room.hostId === socketId) {
+    const heir = room.players.find((p) => p.status === 'connected') ?? room.players[0];
+    setHost(room, heir.id);
+  }
   return room;
+}
+
+/** Makes `targetId` the only host. Callers validate who is allowed to ask. */
+function setHost(room: RoomState, targetId: string): void {
+  room.hostId = targetId;
+  room.players.forEach((p) => (p.isHost = p.id === targetId));
+}
+
+export type HostTransferRejection = 'not_host' | 'no_such_player' | 'offline' | 'already_host';
+
+/**
+ * Manual host transfer (section 4): the host can hand the role to any other
+ * player at any time, so a host who has to leave doesn't end the lobby.
+ */
+export function transferHost(
+  room: RoomState,
+  requesterId: string,
+  targetId: string
+): { ok: true } | { ok: false; reason: HostTransferRejection } {
+  if (room.hostId !== requesterId) return { ok: false, reason: 'not_host' };
+  if (targetId === room.hostId) return { ok: false, reason: 'already_host' };
+  const target = room.players.find((p) => p.id === targetId);
+  if (!target) return { ok: false, reason: 'no_such_player' };
+  if (target.status !== 'connected') return { ok: false, reason: 'offline' };
+  setHost(room, targetId);
+  return { ok: true };
 }
 
 export function getPlayerRoom(socketId: string): RoomState | undefined {
