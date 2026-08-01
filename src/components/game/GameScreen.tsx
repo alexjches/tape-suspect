@@ -218,6 +218,31 @@ export function GameScreen({
         </div>
       )}
 
+      {/* Ready is live during playback, not just after the tape runs out — a
+          lobby that has all seen enough cuts it short (see markReadyToAdvance).
+          Sits low and small so it doesn't fight the video. */}
+      {playState === 'playing' && (
+        <div
+          className="watch-ready-bar"
+          style={{ zIndex: 30 }}
+        >
+          {readyState && readyState.ready > 0 && (
+            <span className="osd-text" style={{ color: 'var(--neon-cyan)' }}>
+              {readyState.ready}/{readyState.total} READY
+            </span>
+          )}
+          <button
+            id="skip-ready-btn"
+            className={`btn-brutal ${clickedReady ? 'dark' : 'green'}`}
+            style={{ fontSize: '0.8rem', padding: '6px 14px', margin: 0 }}
+            disabled={clickedReady}
+            onClick={handleReady}
+          >
+            {clickedReady ? '✓ READY — WAITING' : "⏭ SEEN ENOUGH"}
+          </button>
+        </div>
+      )}
+
       {playState === 'playing' && (
         <div className="scan-line pointer-events-none" style={{ zIndex: 5 }} />
       )}

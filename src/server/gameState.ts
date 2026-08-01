@@ -233,9 +233,17 @@ export function markVideoEnded(room: RoomState, socketId: string): boolean {
   return isImposter;
 }
 
+/**
+ * Flags a player as ready to leave the video phase.
+ *
+ * Deliberately NOT gated on their own video having ended. Section 6 describes
+ * the check as something that happens once your tape finishes, but a lobby
+ * that has collectively seen enough shouldn't have to sit through the rest of
+ * a five-minute clip — so Ready is live for the whole `playing` phase and a
+ * unanimous lobby cuts the tape short. One impatient player still can't skip
+ * anything: `allReadyToAdvance` needs every connected player.
+ */
 export function markReadyToAdvance(room: RoomState, socketId: string): void {
-  // Only meaningful once their own video has actually finished.
-  if (!room.videoEnded[socketId]) return;
   room.readyToAdvance[socketId] = true;
 }
 
