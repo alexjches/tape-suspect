@@ -16,7 +16,6 @@ import { useShop } from '@/hooks/useShop';
 interface Props {
   results: GameResults;
   socketId: string;
-  isHost: boolean;
   actions: RoomActions;
   code: string;
 }
@@ -33,7 +32,7 @@ function tapeLabel(url: string): string {
   }
 }
 
-export function ResultsScreen({ results, socketId, isHost, actions, code }: Props) {
+export function ResultsScreen({ results, socketId, actions, code }: Props) {
   const router = useRouter();
   const { addCoins } = useShop();
   const [ejected, setEjected] = useState(false);
@@ -41,6 +40,19 @@ export function ResultsScreen({ results, socketId, isHost, actions, code }: Prop
   const [showCoins, setShowCoins] = useState(false);
   const [coinCount, setCoinCount] = useState(0);
   const coinsAdded = useRef(false);
+  const [rejoining, setRejoining] = useState(false);
+  const [rejoinError, setRejoinError] = useState<string | null>(null);
+
+  const handleRejoin = () => {
+    setRejoining(true);
+    setRejoinError(null);
+    // On success the room broadcasts phase 'lobby' and the room page swaps
+    // this screen out — nothing more to do here.
+    actions.rejoin(code).catch((err: Error) => {
+      setRejoinError(err.message);
+      setRejoining(false);
+    });
+  };
 
   // Coin rewards are per-player (section 9) — the imposter and the crew are
   // paid differently for the same outcome.
@@ -341,15 +353,17 @@ export function ResultsScreen({ results, socketId, isHost, actions, code }: Prop
         {/* ── Actions ─────────────────────────────────────────────── */}
         {showWinner && (
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
-            {isHost && (
-              <button
-                id="play-again-btn"
-                className="btn-brutal green"
-                onClick={() => actions.backToLobby(code)}
-              >
-                ⏮ REWIND &amp; REPLAY
-              </button>
-            )}
+            {/* The round ending puts everyone out of the lobby. This is how
+                you get back into the same one, settings and all — whoever
+                clicks first re-forms it and takes the host seat. */}
+            <button
+              id="rejoin-btn"
+              className="btn-brutal green"
+              disabled={rejoining}
+              onClick={handleRejoin}
+            >
+              {rejoining ? 'REWINDING…' : '⏮ REJOIN LOBBY'}
+            </button>
             <button
               id="shop-btn"
               className="btn-brutal yellow"
@@ -364,6 +378,12 @@ export function ResultsScreen({ results, socketId, isHost, actions, code }: Prop
             >
               ⏏ LEAVE
             </button>
+          </div>
+        )}
+
+        {rejoinError && (
+          <div className="word-phase-banner" style={{ display: 'block' }}>
+            ⛔ {rejoinError.toUpperCase()}
           </div>
         )}
       </div>

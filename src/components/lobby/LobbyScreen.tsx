@@ -259,10 +259,10 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
                 </button>
                 <span className="osd-text" style={{ color: canStart ? 'var(--neon-green)' : '#aaa' }}>
                   {!enoughPlayers
-                    ? `NEED ${MIN_PLAYERS} DECKS (${room.players.length}/${MIN_PLAYERS})`
+                    ? `NEED ${MIN_PLAYERS} PLAYERS (${room.players.length}/${MIN_PLAYERS})`
                     : !videosReady
                     ? 'LOAD BOTH TAPES FIRST'
-                    : `${room.players.length} DECKS ARMED`}
+                    : `${room.players.length} PLAYERS ARMED`}
                 </span>
               </>
             ) : (
@@ -418,12 +418,12 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
                 className="osd-text"
                 style={{ fontSize: '0.7rem', color: '#666', padding: '0 4px 6px' }}
               >
-                2 SUSPECTS UNLOCKS AT {TWO_IMPOSTER_MIN_PLAYERS} DECKS.
+                2 SUSPECTS UNLOCKS AT {TWO_IMPOSTER_MIN_PLAYERS} PLAYERS.
               </div>
             )}
 
             <div className="osd-menu-row">
-              <span>MAX DECKS:</span>
+              <span>MAX PLAYERS:</span>
               {isHost ? (
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <button

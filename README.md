@@ -48,10 +48,11 @@ Server-authoritative phase machine: `lobby → playing → words → deliberatio
 
 1. **Lobby** — the host picks public/private, whether in-app text chat is on, and a genre (or supplies two custom video URLs). 4–10 players.
 2. **Playing** — one player is secretly assigned the odd video. Everyone's tape starts at the same moment; no controls, no scrubbing, no pausing. **You are never told your own role.**
-3. **Ready Check** — each player reports when their video ends and clicks Ready. The phase advances when everyone is ready, or 10s after the Suspect's video finishes.
+3. **Ready Check** — Ready is live for the whole video, not just once your tape ends, so a lobby that has all seen enough can cut a long clip short. The phase advances when everyone is ready, or 10s after the Suspect's video finishes.
 4. **Words** — 10 seconds each, in turn, to describe the video in a single word. Timing out submits a blank.
 5. **Deliberation** — one 90-second window with chat and voting live at the same time. A tie doesn't end the round: it triggers a restricted re-vote between the tied players.
 6. **Results** — roles are revealed, both tapes are shown side by side, and coins are paid out (50 for playing, +25 for a crew win, +50 for a Suspect win).
+7. **Rejoin** — the round ends the lobby and everyone is out. **Rejoin** puts you back into the same one with the same settings; whoever clicks first re-forms it and takes the host seat, and the others land beside them as they click. Nobody is dragged into another round without asking.
 
 ---
 
@@ -188,7 +189,7 @@ In-memory rooms also mean this can't scale past a single instance without moving
 | `game:word` | Submit this turn's word |
 | `game:chat` | Deliberation-phase message |
 | `vote:cast` | Cast or recast a vote |
-| `game:backToLobby` | Host resets for another round |
+| `game:rejoin` | Re-form the same lobby after a round; each player opts in |
 
 ### Server → Client
 

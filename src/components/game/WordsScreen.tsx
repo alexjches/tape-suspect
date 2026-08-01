@@ -56,7 +56,7 @@ export function WordsScreen({ room, socketId, code, words, turnState, actions }:
         </h2>
         <p className="osd-text" style={{ color: '#aaa', marginBottom: 20 }}>
           One word each about the tape you watched. {room.settings.wordsPerPlayer} word
-          {room.settings.wordsPerPlayer === 1 ? '' : 's'} per deck, 10 seconds a turn.
+          {room.settings.wordsPerPlayer === 1 ? '' : 's'} per player, 10 seconds a turn.
         </p>
 
         {accusedIds.length > 0 && (

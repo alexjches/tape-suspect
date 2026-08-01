@@ -347,8 +347,24 @@ export function useRoom(code: string | null) {
       [socket]
     ),
 
-    backToLobby: useCallback(
-      (code: string) => socket.emit('game:backToLobby', { code }),
+    /**
+     * Get back into the same lobby after a round. Results puts everyone out
+     * of the lobby; whoever clicks first re-forms it and the rest land beside
+     * them as they click. Resolves once you're in.
+     */
+    rejoin: useCallback(
+      (code: string) => {
+        return new Promise<void>((resolve, reject) => {
+          socket.emit(
+            'game:rejoin',
+            { code },
+            (res: { success: boolean; error?: string }) => {
+              if (res.success) resolve();
+              else reject(new Error(res.error || 'Could not rejoin'));
+            }
+          );
+        });
+      },
       [socket]
     ),
 

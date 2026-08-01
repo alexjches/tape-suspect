@@ -9,7 +9,7 @@
 // the gate drops, a cassette slides up into it, then the overlay clears and
 // the picture powers on with the CRT `vhs-power-on` bloom. The prototype runs
 // that off a fixed 1.8s timeline because it has nobody to wait for; here the
-// beats hang off the real sync instead — the tape "reads" while other decks
+// beats hang off the real sync instead — the tape "reads" while other players
 // buffer, and the picture only powers on at the wall-clock moment the server
 // picked. See docs/BUILD-PLAN.md §5.
 
@@ -40,7 +40,6 @@ export function GameScreen({
 }: Props) {
   const playerRef = useRef<VideoPlayerHandle>(null);
   const [playState, setPlayState] = useState<PlayState>('loading');
-  const [countdown, setCountdown] = useState(3);
   const [hasSignaledLoaded, setHasSignaledLoaded] = useState(false);
   const [clickedReady, setClickedReady] = useState(false);
   const [graceLeft, setGraceLeft] = useState<number | null>(null);
@@ -78,14 +77,6 @@ export function GameScreen({
     const handlePlay = ({ playAt }: { playAt: number }) => {
       const delay = Math.max(0, playAt - Date.now());
       setPlayState('countdown');
-      setCountdown(3);
-
-      let c = 3;
-      const interval = setInterval(() => {
-        c--;
-        setCountdown(c);
-        if (c <= 0) clearInterval(interval);
-      }, 1000);
 
       setTimeout(() => {
         playerRef.current?.play();
@@ -131,14 +122,13 @@ export function GameScreen({
   }, [clickedReady, code, actions]);
 
   // One line, as in the prototype — see the .insertion-status note in
-  // globals.css for why a second line breaks the cassette's landing.
+  // globals.css for why a second line breaks the cassette's landing. No
+  // 3-2-1 over the top of it: the insertion is the countdown.
   const insertionStatus =
     playState === 'loading'
       ? 'TAPE INJECTING…'
-      : playState === 'countdown'
-      ? `PLAYBACK IN ${Math.max(countdown, 1)}…`
       : `TAPE LOADED… READING…${
-          loadedCount ? ` ${loadedCount.ready}/${loadedCount.total} DECKS` : ''
+          loadedCount ? ` ${loadedCount.ready}/${loadedCount.total} PLAYERS` : ''
         }`;
 
   return (
@@ -158,7 +148,7 @@ export function GameScreen({
           phase deliberately renders outside the CRT frame. */}
       <div className={`tracking-line${poweredOn ? ' vhs-starting-tracking' : ''}`} />
 
-      {/* Tape insertion — covers load, the wait for other decks, and the
+      {/* Tape insertion — covers load, the wait for other players, and the
           countdown, then clears as the picture powers on. */}
       {showInsertion && (
         <div
@@ -197,7 +187,7 @@ export function GameScreen({
 
             {readyState && (
               <div className="osd-text" style={{ color: 'var(--neon-cyan)', marginBottom: 12 }}>
-                {readyState.ready}/{readyState.total} DECKS READY
+                {readyState.ready}/{readyState.total} PLAYERS READY
               </div>
             )}
 

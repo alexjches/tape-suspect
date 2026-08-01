@@ -50,7 +50,7 @@ export default function LoginPage() {
       <div style={{ display: 'grid', placeItems: 'center', flex: 1, padding: 20 }}>
         <div className="modal-card" style={{ maxWidth: 440 }}>
           <h2 className="brutal-title modal-title">📼 INSERT PROFILE CASSETTE</h2>
-          <p className="modal-subtitle">SIGN IN TO YOUR DECK</p>
+          <p className="modal-subtitle">SIGN IN TO YOUR ACCOUNT</p>
 
           {error && (
             <div className="word-phase-banner" style={{ display: 'block', margin: '12px 0' }}>

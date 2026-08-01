@@ -11,6 +11,8 @@ import {
   getPublicRooms,
   addPlayer,
   removePlayer,
+  reformLobby,
+  restorePlayer,
   getPlayerRoom,
   setPlayerReady,
   allPlayersReady,
@@ -757,21 +759,56 @@ export function registerSocketHandlers(io: Server) {
       });
     });
 
-    // ─── Game: Back to lobby (host only) ─────────────────────────────
-    socket.on('game:backToLobby', (data: { code: string }) => {
-      const room = getRoom(data.code);
-      if (!room || room.hostId !== socket.id) return;
+    // ─── Game: Rejoin after a round ──────────────────────────────────
+    // A finished round ends the lobby — everyone is out and sitting on the
+    // results screen. Rejoin puts you back into the *same* lobby, settings and
+    // all. The first person back re-forms it and takes the host seat; everyone
+    // who clicks after that lands in the lobby alongside them. Nobody is
+    // dragged back in without asking, which is why there is no host-only
+    // "replay everyone" button any more.
+    socket.on(
+      'game:rejoin',
+      (
+        data: { code: string },
+        callback?: (res: { success: boolean; error?: string }) => void
+      ) => {
+        const room = getRoom(data.code);
+        if (!room) {
+          callback?.({ success: false, error: 'That lobby has closed' });
+          return;
+        }
 
-      clearRoomTimer(data.code);
-      room.phase = 'lobby';
-      room.imposterId = null;
-      room.imposterIds = [];
-      room.gameStartedAt = null;
-      room.players.forEach((p) => (p.isReady = false));
-      resetRound(room);
+        if (room.phase === 'results') {
+          clearRoomTimer(data.code);
+          const dropped = reformLobby(room, socket.id);
+          // Take them out of the broadcast room so a lobby they have not opted
+          // back into stops updating their results screen underneath them.
+          for (const p of dropped) {
+            io.sockets.sockets.get(p.id)?.leave(data.code);
+          }
+          console.log(`[Room] ${data.code} re-formed by ${socket.id}`);
+        } else if (room.phase === 'lobby') {
+          if (!room.players.some((p) => p.id === socket.id)) {
+            if (room.players.length >= room.settings.maxPlayers) {
+              callback?.({ success: false, error: 'That lobby is full again' });
+              return;
+            }
+            if (!restorePlayer(room, socket.id)) {
+              callback?.({ success: false, error: 'You are not part of that lobby' });
+              return;
+            }
+            socket.join(data.code);
+          }
+        } else {
+          callback?.({ success: false, error: 'That round is already under way' });
+          return;
+        }
 
-      io.to(data.code).emit('room:updated', sanitizeRoom(room));
-    });
+        io.to(data.code).emit('room:updated', sanitizeRoom(room));
+        io.emit('rooms:updated', getPublicRooms().map(sanitizeRoom));
+        callback?.({ success: true });
+      }
+    );
 
     // ─── Rooms: List (initial fetch) ─────────────────────────────────
     socket.on('rooms:list', (_data: any, callback: (rooms: any[]) => void) => {

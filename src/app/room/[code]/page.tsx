@@ -115,7 +115,7 @@ export default function RoomPage() {
         <div className="view-panel active-view" style={{ display: 'grid', placeItems: 'center' }}>
           <div className="brutal-card" style={{ maxWidth: 380 }}>
             <h2 className="brutal-title" style={{ fontSize: '1.5rem', textAlign: 'center' }}>
-              LABEL YOUR DECK
+              NAME YOUR PLAYER
             </h2>
             <p className="osd-text" style={{ color: '#aaa', textAlign: 'center', margin: '8px 0' }}>
               Joining tape <span style={{ color: 'var(--neon-magenta)' }}>{code}</span>
@@ -215,7 +215,6 @@ export default function RoomPage() {
         <ResultsScreen
           results={state.results}
           socketId={socketId}
-          isHost={isHost}
           actions={actions}
           code={code}
         />

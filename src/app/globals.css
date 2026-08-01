@@ -248,7 +248,12 @@ footer {
 /* Ready control during video playback. The watch phase renders outside
    CrtShell and the player fills the viewport, so this floats over it —
    bottom-centre, clear of the scan-line, and the only interactive thing on
-   screen (the player itself is pointer-events: none). */
+   screen (the player itself is pointer-events: none).
+
+   No panel behind it: the button carries its own .btn-brutal border, and a
+   second frame around that just reads as a grey box on the video. The count
+   gets a hard shadow instead, since it has no backdrop to sit on and the
+   frame underneath it is whatever the tape happens to be showing. */
 .watch-ready-bar {
   position: absolute;
   bottom: 24px;
@@ -257,9 +262,8 @@ footer {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 14px;
-  border: 3px solid #000;
-  border-radius: 8px;
-  background: rgba(13, 5, 32, 0.82);
-  box-shadow: 4px 4px 0px #000;
+}
+
+.watch-ready-bar .osd-text {
+  text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000;
 }

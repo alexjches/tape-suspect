@@ -129,7 +129,7 @@ export function DeliberationScreen({
                   : locked
                   ? 'Your vote stands — waiting on the swing voters to break the tie'
                   : inRevote
-                  ? 'TIE DETECTED — recast, restricted to the tied decks'
+                  ? 'TIE DETECTED — recast, restricted to the tied players'
                   : myVote
                   ? 'Vote locked in. Keep talking until the tape runs out.'
                   : 'Click a VCR console to cast your suspect vote'}

@@ -71,6 +71,14 @@ export interface RoomState {
   voteRound: number;                        // 1, then 2+ for tie re-votes
   revoteCandidates: string[] | null;        // non-null while a tie is unresolved
 
+  /**
+   * Roster snapshot taken when a finished lobby is re-formed. A round ending
+   * puts everyone out of the lobby; this is what lets someone who clicks
+   * Rejoin come back as themselves rather than as a fresh player, without the
+   * server having to take their identity on the client's word.
+   */
+  pastPlayers: Player[];
+
   // ── No-repeat on replay, section 14 ──
   // YouTube IDs already shown in this lobby session. Survives resetRound so a
   // Replay pulls fresh clips; dies with the room, which is the session.
@@ -113,6 +121,7 @@ export function createRoom(code: string, host: Player, settings: RoomSettings): 
     imposterIds: [],
     settings,
     ...freshRoundState(),
+    pastPlayers: [],
     usedVideoIds: [],
     createdAt: Date.now(),
     gameStartedAt: null,
@@ -310,6 +319,45 @@ export function beginNextGameRound(room: RoomState, accusedId: string | null): v
   room.revoteCandidates = null;
   room.deliberationEndsAt = null;
   beginWordPhase(room);
+}
+
+// ─── Rejoin after a round ────────────────────────────────────────────────────
+
+/**
+ * Rebuilds a finished room as a fresh lobby containing only `keeperId`.
+ *
+ * Results ends the lobby: everyone is out, and the first person to click
+ * Rejoin re-forms it around themselves. Settings and the no-repeat history
+ * carry over — it is the same lobby, not a new one — while roles, votes and
+ * words are cleared. Everyone else moves to `pastPlayers` and comes back if
+ * and when they click Rejoin too. Returns the players who were dropped so the
+ * caller can take their sockets out of the broadcast room.
+ */
+export function reformLobby(room: RoomState, keeperId: string): Player[] {
+  const dropped = room.players.filter((p) => p.id !== keeperId);
+  room.pastPlayers = dropped;
+  room.players = room.players.filter((p) => p.id === keeperId);
+  resetRound(room);
+  room.phase = 'lobby';
+  room.imposterId = null;
+  room.imposterIds = [];
+  room.gameStartedAt = null;
+  room.players.forEach((p) => (p.isReady = false));
+  // Whoever gets back first runs the lobby — the old host may never return.
+  if (room.players.length > 0) setHost(room, keeperId);
+  return dropped;
+}
+
+/** Puts a player from `pastPlayers` back into a re-formed lobby. */
+export function restorePlayer(room: RoomState, socketId: string): Player | null {
+  const past = room.pastPlayers.find((p) => p.id === socketId);
+  if (!past) return null;
+  room.pastPlayers = room.pastPlayers.filter((p) => p.id !== socketId);
+  past.isHost = false;
+  past.isReady = false;
+  past.status = 'connected';
+  room.players.push(past);
+  return past;
 }
 
 /** Picks `count` imposters uniformly. They all share one video (section 3). */
