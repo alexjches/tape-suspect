@@ -9,19 +9,19 @@ import type { RoomActions } from '@/hooks/useRoom';
 
 interface Props {
   room: RoomPublic;
-  socketId: string;
+  playerId: string;
   code: string;
   words: GameWord[];
   turnState: TurnState | null;
   actions: RoomActions;
 }
 
-export function WordsScreen({ room, socketId, code, words, turnState, actions }: Props) {
+export function WordsScreen({ room, playerId, code, words, turnState, actions }: Props) {
   const [draft, setDraft] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   const activeId = turnState?.activePlayerId ?? null;
-  const isMyTurn = activeId === socketId;
+  const isMyTurn = activeId === playerId;
   const timeLeft = turnState?.turnTimeLeft ?? 0;
   const activePlayer = room.players.find((p) => p.id === activeId);
 
@@ -30,12 +30,12 @@ export function WordsScreen({ room, socketId, code, words, turnState, actions }:
   const accusedIds = room.accusedIds ?? [];
   const totalRounds = room.totalRounds ?? 1;
   const gameRound = room.gameRound ?? 1;
-  const amAccused = accusedIds.includes(socketId);
+  const amAccused = accusedIds.includes(playerId);
   // Section 4: the Custom author is out of play for the whole round, the same
   // way the round-1 accused is out for round 2.
   const isOut = (id: string) =>
     accusedIds.includes(id) || !!room.players.find((p) => p.id === id)?.isSpectator;
-  const amSpectator = !!room.players.find((p) => p.id === socketId)?.isSpectator;
+  const amSpectator = !!room.players.find((p) => p.id === playerId)?.isSpectator;
   const accusedNames = accusedIds
     .map((id) => room.players.find((p) => p.id === id)?.name ?? '???')
     .join(', ');

@@ -7,6 +7,7 @@ import { useState, useEffect, useCallback, Suspense } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getSocket } from '@/lib/socket';
+import { getPlayerId } from '@/lib/playerId';
 import { RoomPublic, ChatType } from '@/types';
 import { VIDEO_CATEGORIES, CUSTOM_CATEGORY } from '@/lib/videoCategories';
 import { isValidVideoUrl } from '@/lib/videoParser';
@@ -149,6 +150,9 @@ function DashboardContent() {
         playerName: playerName || 'Guest',
         avatar: playerAvatar,
         userId,
+        // Durable identity, so refreshing the lobby you just made keeps you
+        // in it — and keeps you the host. See src/lib/playerId.ts.
+        playerId: getPlayerId(),
         cosmetics,
         isPublic,
         chatType,

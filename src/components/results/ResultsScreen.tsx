@@ -16,7 +16,7 @@ import { tapeSkinStyles, equippedSticker } from '@/lib/cosmetics';
 
 interface Props {
   results: GameResults;
-  socketId: string;
+  playerId: string;
   actions: RoomActions;
   code: string;
 }
@@ -33,7 +33,7 @@ function tapeLabel(url: string): string {
   }
 }
 
-export function ResultsScreen({ results, socketId, actions, code }: Props) {
+export function ResultsScreen({ results, playerId, actions, code }: Props) {
   const router = useRouter();
   const { addCoins } = useShop();
   const [ejected, setEjected] = useState(false);
@@ -57,12 +57,12 @@ export function ResultsScreen({ results, socketId, actions, code }: Props) {
 
   // Coin rewards are per-player (section 9) — the imposter and the crew are
   // paid differently for the same outcome.
-  const myPlayer = results.players.find((p) => p.id === socketId);
+  const myPlayer = results.players.find((p) => p.id === playerId);
   const myCoinReward = myPlayer?.coinReward;
 
   const imposterIds = results.imposterIds ?? [results.imposterId];
   const imposterPlayers = results.players.filter((p) => imposterIds.includes(p.id));
-  const isImposter = imposterIds.includes(socketId);
+  const isImposter = imposterIds.includes(playerId);
   const crewWins = results.crewWins;
 
   // A 2-imposter game can land between the two sides: exactly one of the pair

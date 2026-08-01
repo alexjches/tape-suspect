@@ -10,12 +10,21 @@
 //   deliberation ONE 90s window with chat and voting live simultaneously (8)
 //   results      roles revealed, coins awarded (9)
 
-import type { EquippedCosmetics } from '../types';
+import type { EquippedCosmetics, GameResults, GameWord } from '../types';
 
 export type PlayerStatus = 'connected' | 'disconnected';
 
 export interface Player {
-  id: string;          // socket.id
+  /**
+   * Durable player id — the browser's `imposter_player_id`, not the socket.
+   *
+   * Every other structure that names a player (votes, turnOrder, imposterIds,
+   * accusedIds, wordsUsed…) holds this, so a reconnect that swaps `socketId`
+   * leaves the whole round intact. See src/lib/playerId.ts.
+   */
+  id: string;
+  /** Current transport. Empty while disconnected; changes on every reconnect. */
+  socketId: string;
   userId: string | null; // DB user id (null for guests)
   name: string;
   avatar: string;
@@ -62,9 +71,15 @@ export interface RoomState {
   settings: RoomSettings;
 
   // ── Ready check, section 6 ──
-  videoEnded: Record<string, boolean>;      // socketId -> their video finished
-  readyToAdvance: Record<string, boolean>;  // socketId -> clicked Ready
+  videoEnded: Record<string, boolean>;      // playerId -> their video finished
+  readyToAdvance: Record<string, boolean>;  // playerId -> clicked Ready
   imposterVideoEndedAt: number | null;      // epoch ms, starts the 10s grace
+  /**
+   * The wall-clock moment the tapes were told to roll, or null before the
+   * lobby was all loaded. A player who reconnects mid-video is played in
+   * immediately off this rather than waiting for a start that already fired.
+   */
+  playAt: number | null;
 
   // ── 2-imposter structure, section 3 ──
   // A 2-imposter game runs two full word+vote rounds. The player accused in
@@ -74,14 +89,20 @@ export interface RoomState {
   accusedIds: string[];                     // accused so far, in vote order
 
   // ── Word phase, section 7 ──
-  wordsUsed: Record<string, number>;        // socketId -> words submitted
+  wordsUsed: Record<string, number>;        // playerId -> words submitted
   turnOrder: string[];                      // randomized player ids
   turnIndex: number;
   activePlayerId: string | null;
   turnTimeLeft: number;                     // seconds left on the current turn
+  /**
+   * Every word said this round, in order. Kept server-side purely so a player
+   * who reconnects gets the evidence back — the words are what deliberation
+   * argues over, and a blank board is worse than not returning at all.
+   */
+  words: GameWord[];
 
   // ── Deliberation, section 8 ──
-  votes: Record<string, string>;            // voter socketId -> target socketId
+  votes: Record<string, string>;            // voter playerId -> target playerId
   deliberationEndsAt: number | null;        // epoch ms the 90s window closes
   voteRound: number;                        // 1, then 2+ for tie re-votes
   revoteCandidates: string[] | null;        // non-null while a tie is unresolved
@@ -102,6 +123,13 @@ export interface RoomState {
    */
   pastPlayers: Player[];
 
+  /**
+   * The `game:results` payload as broadcast, kept so a player who refreshes on
+   * the results screen gets the same reveal back instead of an empty room.
+   * Cleared when the lobby re-forms.
+   */
+  lastResults: GameResults | null;
+
   // ── No-repeat on replay, section 14 ──
   // YouTube IDs already shown in this lobby session. Survives resetRound so a
   // Replay pulls fresh clips; dies with the room, which is the session.
@@ -120,9 +148,11 @@ function freshRoundState() {
     videoEnded: {} as Record<string, boolean>,
     readyToAdvance: {} as Record<string, boolean>,
     imposterVideoEndedAt: null,
+    playAt: null,
     gameRound: 1,
     accusedIds: [] as string[],
     wordsUsed: {} as Record<string, number>,
+    words: [] as GameWord[],
     turnOrder: [] as string[],
     turnIndex: -1,
     activePlayerId: null,
@@ -146,6 +176,7 @@ export function createRoom(code: string, host: Player, settings: RoomSettings): 
     ...freshRoundState(),
     customVideoAuthorId: null,
     pastPlayers: [],
+    lastResults: null,
     usedVideoIds: [],
     createdAt: Date.now(),
     gameStartedAt: null,
@@ -168,7 +199,12 @@ export function deleteRoom(code: string): void {
 
 export function getPublicRooms(): RoomState[] {
   return Array.from(rooms.values()).filter(
-    (r) => r.settings.isPublic && r.phase === 'lobby'
+    // A lobby whose players are all inside their reconnect window is not a
+    // lobby anyone should be shown — it either comes back or gets reaped.
+    (r) =>
+      r.settings.isPublic &&
+      r.phase === 'lobby' &&
+      r.players.some((p) => p.status === 'connected')
   );
 }
 
@@ -180,20 +216,51 @@ export function addPlayer(code: string, player: Player): RoomState | null {
   return room;
 }
 
-export function removePlayer(code: string, socketId: string): RoomState | null {
+export function removePlayer(code: string, playerId: string): RoomState | null {
   const room = rooms.get(code);
   if (!room) return null;
-  room.players = room.players.filter((p) => p.id !== socketId);
+  room.players = room.players.filter((p) => p.id !== playerId);
   if (room.players.length === 0) {
     rooms.delete(code);
     return null;
   }
   // Host left — hand the lobby to someone who is still on the line.
-  if (room.hostId === socketId) {
+  if (room.hostId === playerId) {
     const heir = room.players.find((p) => p.status === 'connected') ?? room.players[0];
     setHost(room, heir.id);
   }
   return room;
+}
+
+// ─── Reconnect ───────────────────────────────────────────────────────────────
+//
+// A dropped socket no longer removes the player. They are marked
+// `disconnected`, which takes them out of `activePlayers()` — so no phase
+// waits on them — while everything that names them by id (their vote, their
+// slot in the turn order, their role) stays exactly where it was. The caller
+// arms a grace timer; if the same player id comes back before it fires,
+// `reattachPlayer` puts them straight back into the round they left.
+
+/** Flags a player as off the line. Returns them, or null if unknown here. */
+export function markDisconnected(room: RoomState, playerId: string): Player | null {
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) return null;
+  player.status = 'disconnected';
+  player.socketId = '';
+  return player;
+}
+
+/** Points a known player at their new socket. Returns them, or null. */
+export function reattachPlayer(
+  room: RoomState,
+  playerId: string,
+  socketId: string
+): Player | null {
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) return null;
+  player.socketId = socketId;
+  player.status = 'connected';
+  return player;
 }
 
 /** Makes `targetId` the only host. Callers validate who is allowed to ask. */
@@ -222,25 +289,39 @@ export function transferHost(
   return { ok: true };
 }
 
-export function getPlayerRoom(socketId: string): RoomState | undefined {
+/**
+ * The room and player a live socket belongs to. Only the disconnect handler
+ * needs this — everything else knows the player id from `socket.data`.
+ */
+export function findRoomBySocket(
+  socketId: string
+): { room: RoomState; player: Player } | undefined {
   for (const room of rooms.values()) {
-    if (room.players.some((p) => p.id === socketId)) {
-      return room;
-    }
+    const player = room.players.find((p) => p.socketId === socketId);
+    if (player) return { room, player };
   }
   return undefined;
 }
 
-export function setPlayerReady(code: string, socketId: string): RoomState | null {
+export function setPlayerReady(code: string, playerId: string): RoomState | null {
   const room = rooms.get(code);
   if (!room) return null;
-  const player = room.players.find((p) => p.id === socketId);
+  const player = room.players.find((p) => p.id === playerId);
   if (player) player.isReady = true;
   return room;
 }
 
+/**
+ * Everyone who will actually load a tape has loaded it.
+ *
+ * Measured against `activePlayers` rather than the whole roster: the Custom
+ * genre's author is never sent a video (section 4) and someone inside their
+ * reconnect window has no player running, so counting either would hold the
+ * entire lobby at the insertion screen until the grace timer bailed it out.
+ */
 export function allPlayersReady(room: RoomState): boolean {
-  return room.players.every((p) => p.isReady);
+  const loading = activePlayers(room);
+  return loading.length > 0 && loading.every((p) => p.isReady);
 }
 
 export function generateRoomCode(): string {
@@ -257,9 +338,9 @@ export function generateRoomCode(): string {
 // ─── Ready check (section 6) ─────────────────────────────────────────────────
 
 /** Marks a player's video as finished. Returns true if that was the imposter. */
-export function markVideoEnded(room: RoomState, socketId: string): boolean {
-  room.videoEnded[socketId] = true;
-  const isImposter = room.imposterIds.includes(socketId);
+export function markVideoEnded(room: RoomState, playerId: string): boolean {
+  room.videoEnded[playerId] = true;
+  const isImposter = room.imposterIds.includes(playerId);
   if (isImposter && room.imposterVideoEndedAt === null) {
     room.imposterVideoEndedAt = Date.now();
   }
@@ -276,8 +357,8 @@ export function markVideoEnded(room: RoomState, socketId: string): boolean {
  * unanimous lobby cuts the tape short. One impatient player still can't skip
  * anything: `allReadyToAdvance` needs every connected player.
  */
-export function markReadyToAdvance(room: RoomState, socketId: string): void {
-  room.readyToAdvance[socketId] = true;
+export function markReadyToAdvance(room: RoomState, playerId: string): void {
+  room.readyToAdvance[playerId] = true;
 }
 
 export function connectedPlayers(room: RoomState): Player[] {
@@ -384,6 +465,7 @@ export function reformLobby(room: RoomState, keeperId: string): Player[] {
   room.phase = 'lobby';
   room.imposterId = null;
   room.imposterIds = [];
+  room.lastResults = null;
   room.gameStartedAt = null;
   room.players.forEach((p) => {
     p.isReady = false;
@@ -395,10 +477,15 @@ export function reformLobby(room: RoomState, keeperId: string): Player[] {
 }
 
 /** Puts a player from `pastPlayers` back into a re-formed lobby. */
-export function restorePlayer(room: RoomState, socketId: string): Player | null {
-  const past = room.pastPlayers.find((p) => p.id === socketId);
+export function restorePlayer(
+  room: RoomState,
+  playerId: string,
+  socketId: string
+): Player | null {
+  const past = room.pastPlayers.find((p) => p.id === playerId);
   if (!past) return null;
-  room.pastPlayers = room.pastPlayers.filter((p) => p.id !== socketId);
+  room.pastPlayers = room.pastPlayers.filter((p) => p.id !== playerId);
+  past.socketId = socketId;
   past.isHost = false;
   past.isReady = false;
   past.isSpectator = false;
@@ -415,17 +502,31 @@ export function pickImposters(room: RoomState, count: number): string[] {
 export const TURN_SECONDS = 10;
 export const DELIBERATION_SECONDS = 90;
 
-export function recordWord(room: RoomState, socketId: string): void {
-  room.wordsUsed[socketId] = (room.wordsUsed[socketId] || 0) + 1;
+export function recordWord(room: RoomState, playerId: string, word: GameWord): void {
+  room.wordsUsed[playerId] = (room.wordsUsed[playerId] || 0) + 1;
+  room.words.push(word);
 }
 
-export function playerFinishedTurn(room: RoomState, socketId: string): boolean {
-  return (room.wordsUsed[socketId] || 0) >= room.settings.wordsPerPlayer;
+export function playerFinishedTurn(room: RoomState, playerId: string): boolean {
+  return (room.wordsUsed[playerId] || 0) >= room.settings.wordsPerPlayer;
 }
 
-/** Advances to the next player. Returns false when the phase is over. */
+/**
+ * Advances to the next player. Returns false when the phase is over.
+ *
+ * Skips anyone who has dropped out of active play since the order was drawn —
+ * a player inside their reconnect window has no client to type into, so
+ * landing on them would burn a full 10s turn on nobody.
+ */
 export function advanceTurn(room: RoomState): boolean {
-  room.turnIndex++;
+  const playable = new Set(activePlayers(room).map((p) => p.id));
+  do {
+    room.turnIndex++;
+  } while (
+    room.turnIndex < room.turnOrder.length &&
+    !playable.has(room.turnOrder[room.turnIndex])
+  );
+
   if (room.turnIndex >= room.turnOrder.length) {
     room.activePlayerId = null;
     room.turnTimeLeft = 0;
@@ -537,6 +638,23 @@ export function resolveVote(room: RoomState): VoteOutcome {
     topIds.every((id) => room.imposterIds.includes(id))
   ) {
     return { kind: 'allImpostersCaught' };
+  }
+
+  // A deadlock the electorate physically cannot break: the only two players
+  // left in the game are the two tied candidates, and nobody may vote for
+  // themselves — so every re-vote produces the same 1-1 forever. Looping here
+  // would leave the room running its deliberation timer with no way out, so
+  // the round ends with no accusation. Reachable whenever a lobby shrinks to
+  // two active players, which since reconnect landed includes two people
+  // simply losing signal. Larger deadlocks are left to loop: with three or
+  // more voters somebody can always switch and break it.
+  if (
+    swingVoters.length === 0 &&
+    topIds.length === 2 &&
+    stillPlaying.size === 2 &&
+    topIds.every((id) => stillPlaying.has(id))
+  ) {
+    return { kind: 'accused', accusedId: null };
   }
 
   const eligibleVoters =

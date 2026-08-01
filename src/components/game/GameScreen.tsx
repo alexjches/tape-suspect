@@ -26,7 +26,7 @@ interface Props {
   assignment: GameAssignment;
   loadedCount: { ready: number; total: number } | null;
   readyState: ReadyState | null;
-  socketId: string;
+  playerId: string;
   actions: RoomActions;
 }
 
@@ -37,7 +37,7 @@ export function GameScreen({
   assignment,
   loadedCount,
   readyState,
-  socketId,
+  playerId,
   actions,
 }: Props) {
   // The cassette going into the deck is yours, so it wears your loadout —

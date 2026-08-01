@@ -30,7 +30,7 @@ const CHANNEL_COLORS = [
 
 interface Props {
   room: RoomPublic;
-  socketId: string;
+  playerId: string;
   code: string;
   words: GameWord[];
   chatMessages: ChatMessage[];
@@ -42,7 +42,7 @@ interface Props {
 
 export function DeliberationScreen({
   room,
-  socketId,
+  playerId,
   code,
   words,
   chatMessages,
@@ -64,11 +64,11 @@ export function DeliberationScreen({
   // again. Players who kept their vote stay locked (section 8).
   useEffect(() => {
     if (!revoteCandidates) return;
-    if (!eligibleVoters || eligibleVoters.includes(socketId)) {
+    if (!eligibleVoters || eligibleVoters.includes(playerId)) {
       setMyVote(null);
       setVoteError(null);
     }
-  }, [revoteCandidates, eligibleVoters, socketId, voteRound]);
+  }, [revoteCandidates, eligibleVoters, playerId, voteRound]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
@@ -76,22 +76,22 @@ export function DeliberationScreen({
 
   const chatEnabled = room.settings.chatType === 'text';
   const inRevote = !!revoteCandidates;
-  const canRecast = !eligibleVoters || eligibleVoters.includes(socketId);
+  const canRecast = !eligibleVoters || eligibleVoters.includes(playerId);
 
   // Section 3: someone ejected in round 1 neither votes nor stands in round 2.
   const accusedIds = room.accusedIds ?? [];
-  const amAccused = accusedIds.includes(socketId);
+  const amAccused = accusedIds.includes(playerId);
   // Section 4: the Custom author neither votes nor stands, all round.
   const isOut = (id: string) =>
     accusedIds.includes(id) || !!room.players.find((p) => p.id === id)?.isSpectator;
-  const amSpectator = !!room.players.find((p) => p.id === socketId)?.isSpectator;
+  const amSpectator = !!room.players.find((p) => p.id === playerId)?.isSpectator;
   const totalRounds = room.totalRounds ?? 1;
   const gameRound = room.gameRound ?? 1;
 
   const locked = (inRevote && !canRecast) || amAccused || amSpectator;
 
   const handleVote = (targetId: string) => {
-    if (myVote || targetId === socketId || locked) return;
+    if (myVote || targetId === playerId || locked) return;
     if (isOut(targetId)) return;
     if (inRevote && !revoteCandidates!.includes(targetId)) return;
 
@@ -163,7 +163,7 @@ export function DeliberationScreen({
             {room.players.map((player, i) => {
               const color = CHANNEL_COLORS[i % CHANNEL_COLORS.length];
               const votes = voteTally?.tally?.[player.id] ?? 0;
-              const isMe = player.id === socketId;
+              const isMe = player.id === playerId;
               const ejected = isOut(player.id);
               const onBallot =
                 !ejected && (!inRevote || revoteCandidates!.includes(player.id));

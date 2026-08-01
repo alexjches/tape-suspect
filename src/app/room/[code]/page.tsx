@@ -2,11 +2,12 @@
 // src/app/room/[code]/page.tsx
 // Phase-aware room shell: lobby -> playing -> words -> deliberation -> results
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
+import { getPlayerId } from '@/lib/playerId';
 import { useRoom } from '@/hooks/useRoom';
 import { useShop } from '@/hooks/useShop';
 import { CrtShell } from '@/components/vhs/CrtShell';
@@ -24,8 +25,14 @@ export default function RoomPage() {
   const { data: session, status } = useSession();
   const { state, actions } = useRoom(code);
   const { equipped: cosmetics } = useShop();
-  const [socketId, setSocketId] = useState('');
-  const [hasAttemptedJoin, setHasAttemptedJoin] = useState(false);
+  /**
+   * Who we are to the room. Durable across refreshes and reconnects — the
+   * socket id it replaced changed on both. Empty until an effect has run, so
+   * SSR and the first client render agree.
+   */
+  const [playerId, setPlayerId] = useState('');
+  /** Bumped when a guest names themselves, to re-run the entry effect. */
+  const [identityTick, setIdentityTick] = useState(0);
 
   const socket = getSocket();
 
@@ -35,50 +42,67 @@ export default function RoomPage() {
   );
 
   useEffect(() => {
-    if (!socket.connected) socket.connect();
-    const handleConnect = () => setSocketId(socket.id || '');
-    socket.on('connect', handleConnect);
-    if (socket.connected) setSocketId(socket.id || '');
-    return () => {
-      socket.off('connect', handleConnect);
-    };
-  }, [socket]);
+    setPlayerId(getPlayerId());
+  }, []);
 
   useEffect(() => {
     if (state.isKicked) router.push('/dashboard');
   }, [state.isKicked, router]);
 
-  // Auto-join once the socket is up and we know who this player is.
-  useEffect(() => {
-    if (!socketId || !code || status === 'loading' || state.room || hasAttemptedJoin) return;
-
-    const storedName = localStorage.getItem('imposter_guest_name');
-    const storedAvatar = localStorage.getItem('imposter_guest_avatar') || '🎮';
-
+  // The name/avatar to enter under, or null if we don't know yet.
+  const identity = (() => {
+    if (status === 'loading' || typeof window === 'undefined') return null;
     if (session?.user?.name) {
-      setHasAttemptedJoin(true);
-      actions
-        .joinRoom(
-          session.user.name,
-          (session.user as any).image || '🎮',
-          (session.user as any).id || null,
-          code,
-          cosmetics
-        )
-        .catch((err) => console.error('Auto-join failed:', err));
-    } else if (storedName) {
-      setHasAttemptedJoin(true);
-      actions
-        .joinRoom(storedName, storedAvatar, null, code, cosmetics)
-        .catch((err) => console.error('Guest auto-join failed:', err));
+      return {
+        name: session.user.name,
+        avatar: (session.user as any).image || '🎮',
+        userId: ((session.user as any).id as string | null) || null,
+      };
     }
-  }, [socketId, code, status, session, state.room, hasAttemptedJoin, actions, cosmetics]);
+    const storedName = localStorage.getItem('imposter_guest_name');
+    if (storedName) {
+      return {
+        name: storedName,
+        avatar: localStorage.getItem('imposter_guest_avatar') || '🎮',
+        userId: null,
+      };
+    }
+    return null;
+  })();
+
+  // Kept in a ref so the connect listener below always calls the current one
+  // without the effect having to re-subscribe on every render.
+  const enterRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    enterRef.current = () => {
+      if (!code || !identity) return;
+      actions
+        .joinRoom(identity.name, identity.avatar, identity.userId, code, cosmetics)
+        .catch((err) => console.error('Entering tape failed:', err));
+    };
+  });
+
+  // Enter on connect, and on every *re*-connect. The server matches on
+  // playerId, so a repeat call is a resume rather than a second player —
+  // which is what puts you back in the round after a refresh or a blip.
+  const canEnter = !!identity && !!code;
+  useEffect(() => {
+    if (!canEnter) return;
+    if (!socket.connected) socket.connect();
+    const onConnect = () => enterRef.current();
+    socket.on('connect', onConnect);
+    if (socket.connected) enterRef.current();
+    return () => {
+      socket.off('connect', onConnect);
+    };
+  }, [socket, canEnter, code, identityTick]);
 
   const handleGuestJoin = () => {
     if (localGuestName.trim().length < 2 || !code) return;
     localStorage.setItem('imposter_guest_name', localGuestName.trim());
     localStorage.setItem('imposter_guest_avatar', localGuestAvatar);
-    setHasAttemptedJoin(true);
+    setIdentityTick((n) => n + 1);
+    if (!socket.connected) socket.connect();
     actions
       .joinRoom(localGuestName.trim(), localGuestAvatar, null, code, cosmetics)
       .catch((err) => console.error('Guest join failed:', err));
@@ -86,7 +110,7 @@ export default function RoomPage() {
 
   if (!code) return null;
 
-  const isHost = state.room?.hostId === socketId;
+  const isHost = !!playerId && state.room?.hostId === playerId;
 
   if (state.error && !state.room) {
     return (
@@ -165,7 +189,7 @@ export default function RoomPage() {
   // Section 4: whoever supplied the Custom tapes sits the round out, so they
   // get no assignment and there is nothing to play them. They still watch the
   // rest of the round unfold from the word phase on.
-  const amSpectator = !!state.room.players.find((p) => p.id === socketId)?.isSpectator;
+  const amSpectator = !!state.room.players.find((p) => p.id === playerId)?.isSpectator;
   if (state.phase === 'playing' && amSpectator) {
     return (
       <CrtShell badge={code}>
@@ -196,7 +220,7 @@ export default function RoomPage() {
         assignment={state.assignment}
         loadedCount={state.loadedCount}
         readyState={state.readyState}
-        socketId={socketId}
+        playerId={playerId}
         actions={actions}
       />
     );
@@ -211,7 +235,7 @@ export default function RoomPage() {
       {state.phase === 'lobby' && (
         <LobbyScreen
           room={state.room}
-          socketId={socketId}
+          playerId={playerId}
           isHost={isHost}
           actions={actions}
           code={code}
@@ -222,7 +246,7 @@ export default function RoomPage() {
       {state.phase === 'words' && (
         <WordsScreen
           room={state.room}
-          socketId={socketId}
+          playerId={playerId}
           code={code}
           words={state.words}
           turnState={state.turnState}
@@ -233,7 +257,7 @@ export default function RoomPage() {
       {state.phase === 'deliberation' && (
         <DeliberationScreen
           room={state.room}
-          socketId={socketId}
+          playerId={playerId}
           code={code}
           words={state.words}
           chatMessages={state.chatMessages}
@@ -247,7 +271,7 @@ export default function RoomPage() {
       {state.phase === 'results' && state.results && (
         <ResultsScreen
           results={state.results}
-          socketId={socketId}
+          playerId={playerId}
           actions={actions}
           code={code}
         />

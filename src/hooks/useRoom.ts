@@ -8,6 +8,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { getSocket } from '@/lib/socket';
+import { getPlayerId } from '@/lib/playerId';
 import {
   RoomPublic,
   GameAssignment,
@@ -108,6 +109,12 @@ export function useRoom(code: string | null) {
       setState((prev) => ({ ...prev, words: [...prev.words, word] }));
     };
 
+    // Sent only to a reconnecting socket: the board as it stands, because
+    // game:wordPhaseStart clears it and the words are the whole argument.
+    const handleWordHistory = (data: { words: GameWord[] }) => {
+      setState((prev) => ({ ...prev, words: data.words }));
+    };
+
     const handleDeliberationStart = (
       data: RoomPublic & { endsAt: number; durationSeconds: number; voteRound: number; revoteCandidates: string[] | null }
     ) => {
@@ -182,6 +189,7 @@ export function useRoom(code: string | null) {
     socket.on('game:wordPhaseStart', handleWordPhaseStart);
     socket.on('game:turnState', handleTurnState);
     socket.on('game:word', handleWord);
+    socket.on('game:wordHistory', handleWordHistory);
     socket.on('game:deliberationStart', handleDeliberationStart);
     socket.on('game:deliberationTick', handleTick);
     socket.on('game:revote', handleRevote);
@@ -199,6 +207,7 @@ export function useRoom(code: string | null) {
       socket.off('game:wordPhaseStart', handleWordPhaseStart);
       socket.off('game:turnState', handleTurnState);
       socket.off('game:word', handleWord);
+      socket.off('game:wordHistory', handleWordHistory);
       socket.off('game:deliberationStart', handleDeliberationStart);
       socket.off('game:deliberationTick', handleTick);
       socket.off('game:revote', handleRevote);
@@ -211,6 +220,12 @@ export function useRoom(code: string | null) {
   }, [code, socket]);
 
   const actions = {
+    /**
+     * Enter a room — or re-enter one. The server matches on `playerId`, so a
+     * refresh or a dropped connection lands back in the round in progress
+     * rather than creating a second player; the phase is replayed to this
+     * socket alone. Safe to call on every `connect`.
+     */
     joinRoom: useCallback(
       (
         playerName: string,
@@ -222,7 +237,7 @@ export function useRoom(code: string | null) {
         return new Promise<RoomPublic>((resolve, reject) => {
           socket.emit(
             'room:join',
-            { code, playerName, avatar, userId, cosmetics },
+            { code, playerName, avatar, userId, cosmetics, playerId: getPlayerId() },
             (res: { success: boolean; room?: RoomPublic; error?: string }) => {
               if (res.success && res.room) {
                 setState((prev) => ({
@@ -255,7 +270,7 @@ export function useRoom(code: string | null) {
         return new Promise<string>((resolve, reject) => {
           socket.emit(
             'room:create',
-            data,
+            { ...data, playerId: getPlayerId() },
             (res: { success: boolean; code?: string; error?: string }) => {
               if (res.success && res.code) resolve(res.code);
               else reject(new Error(res.error || 'Failed to create room'));

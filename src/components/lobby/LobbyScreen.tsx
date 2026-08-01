@@ -62,14 +62,14 @@ const consoleBadgeStyle: React.CSSProperties = {
 
 interface Props {
   room: RoomPublic;
-  socketId: string;
+  playerId: string;
   isHost: boolean;
   actions: RoomActions;
   code: string;
   error: string | null;
 }
 
-export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Props) {
+export function LobbyScreen({ room, playerId, isHost, actions, code, error }: Props) {
   const router = useRouter();
   const [copied, setCopied] = useState(false);
   const [wordsInput, setWordsInput] = useState<number>(room.settings.wordsPerPlayer ?? 1);
@@ -152,7 +152,7 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
           <div className="tapes-grid">
             {room.players.map((player, i) => {
               const color = CHANNEL_COLORS[i % CHANNEL_COLORS.length];
-              const isMe = player.id === socketId;
+              const isMe = player.id === playerId;
               const online = player.status === 'connected';
               // Section 10: a bought VCR skin repaints your console for
               // everyone, not just you — cosmetics ride along on the roster.
