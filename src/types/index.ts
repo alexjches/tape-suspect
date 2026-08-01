@@ -15,6 +15,11 @@ export interface PlayerPublic {
   avatar: string;
   isHost: boolean;
   isReady: boolean;
+  /**
+   * Sitting this round out (section 4) — the player who supplied the Custom
+   * genre's links. No video, no turn, no vote, no reward.
+   */
+  isSpectator: boolean;
   status: 'connected' | 'disconnected';
   /** Equipped cosmetics (section 10) — what everyone else sees you wearing. */
   cosmetics: EquippedCosmetics;
@@ -34,6 +39,8 @@ export interface RoomPublic {
    * the reveal until both rounds are done.
    */
   accusedIds: string[];
+  /** Who supplied the Custom links, and so sits out a Custom round (§4). */
+  customVideoAuthorId: string | null;
   players: PlayerPublic[];
   settings: {
     isPublic: boolean;
@@ -95,6 +102,7 @@ export interface GameResults {
     cosmetics: EquippedCosmetics;
     isImposter: boolean;
     wasAccused: boolean;
+    isSpectator: boolean;
     coinReward: CoinReward;
   }[];
 }

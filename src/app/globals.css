@@ -281,3 +281,12 @@ footer {
   justify-content: flex-end;
   margin-right: 28px;
 }
+
+/* REC now sits bottom-right inside the viewport, over whatever the active
+   view has scrolled to. The badge is pointer-events: none so it never blocks
+   a click, but on a tall screen (the lobby with the custom URL panel open)
+   content slides under it and the two overlap. Reserve the strip it occupies
+   — 24px of .camcorder-hud padding plus the badge itself. */
+.view-panel.active-view {
+  padding-bottom: 56px;
+}

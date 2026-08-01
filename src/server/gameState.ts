@@ -27,6 +27,13 @@ export interface Player {
   cosmetics: EquippedCosmetics;
   isHost: boolean;
   isReady: boolean;    // true when their video is loaded & ready to play
+  /**
+   * Sitting this round out (section 4). Set on whoever supplied the Custom
+   * genre's links: they already know both answers, so they get no video, no
+   * turn, no vote and no reward. Cleared between rounds — it follows the
+   * tapes, not the person.
+   */
+  isSpectator: boolean;
   status: PlayerStatus;
 }
 
@@ -80,6 +87,14 @@ export interface RoomState {
   revoteCandidates: string[] | null;        // non-null while a tie is unresolved
 
   /**
+   * Who last pasted the Custom genre's video URLs. They sit the round out
+   * (section 4) — tracked rather than assumed to be the host, because the
+   * host can be handed on after the links go in, and it's the person who saw
+   * the URLs who knows the answers.
+   */
+  customVideoAuthorId: string | null;
+
+  /**
    * Roster snapshot taken when a finished lobby is re-formed. A round ending
    * puts everyone out of the lobby; this is what lets someone who clicks
    * Rejoin come back as themselves rather than as a fresh player, without the
@@ -129,6 +144,7 @@ export function createRoom(code: string, host: Player, settings: RoomSettings): 
     imposterIds: [],
     settings,
     ...freshRoundState(),
+    customVideoAuthorId: null,
     pastPlayers: [],
     usedVideoIds: [],
     createdAt: Date.now(),
@@ -269,16 +285,33 @@ export function connectedPlayers(room: RoomState): Player[] {
 }
 
 /**
- * Everyone still in the game: connected and not yet accused. In a 1-imposter
- * game this is the same as connectedPlayers, because nobody is ever removed
- * mid-game. In a 2-imposter game the round-1 accused drops out of the turn
- * order and the round-2 ballot (section 3) — they still see everything, they
- * just can't speak or vote.
+ * Everyone still in the game: connected, not sitting out, not yet accused.
+ * This is what drives the Ready Check, the turn order, the ballot and the
+ * "everyone has voted" test — anyone missing from it is a spectator of some
+ * kind and must not be able to hold a phase open.
+ *
+ * Two ways out of it. The Custom genre's author never plays at all
+ * (section 4), and in a 2-imposter game the round-1 accused drops out for
+ * round 2 (section 3) — they still see everything, they just can't act.
  */
 export function activePlayers(room: RoomState): Player[] {
   return room.players.filter(
-    (p) => p.status === 'connected' && !room.accusedIds.includes(p.id)
+    (p) => p.status === 'connected' && !p.isSpectator && !room.accusedIds.includes(p.id)
   );
+}
+
+/**
+ * Marks whoever supplied the Custom links as sitting this round out, and
+ * clears the flag for everyone else. Returns that player, or null when the
+ * round is on a pool genre or the author has left.
+ */
+export function assignSpectator(room: RoomState, isCustomRound: boolean): Player | null {
+  let sitter: Player | null = null;
+  if (isCustomRound && room.customVideoAuthorId) {
+    sitter = room.players.find((p) => p.id === room.customVideoAuthorId) ?? null;
+  }
+  room.players.forEach((p) => (p.isSpectator = p.id === sitter?.id));
+  return sitter;
 }
 
 /** 2 for a 2-imposter game, 1 otherwise (section 3). */
@@ -287,7 +320,9 @@ export function totalGameRounds(room: RoomState): number {
 }
 
 export function allReadyToAdvance(room: RoomState): boolean {
-  const active = connectedPlayers(room);
+  // Spectators get no video, so they can never report ready — counting them
+  // would hold the phase open until the grace timer fired.
+  const active = activePlayers(room);
   return active.length > 0 && active.every((p) => room.readyToAdvance[p.id]);
 }
 
@@ -350,7 +385,10 @@ export function reformLobby(room: RoomState, keeperId: string): Player[] {
   room.imposterId = null;
   room.imposterIds = [];
   room.gameStartedAt = null;
-  room.players.forEach((p) => (p.isReady = false));
+  room.players.forEach((p) => {
+    p.isReady = false;
+    p.isSpectator = false;
+  });
   // Whoever gets back first runs the lobby — the old host may never return.
   if (room.players.length > 0) setHost(room, keeperId);
   return dropped;
@@ -363,6 +401,7 @@ export function restorePlayer(room: RoomState, socketId: string): Player | null 
   room.pastPlayers = room.pastPlayers.filter((p) => p.id !== socketId);
   past.isHost = false;
   past.isReady = false;
+  past.isSpectator = false;
   past.status = 'connected';
   room.players.push(past);
   return past;
@@ -370,7 +409,7 @@ export function restorePlayer(room: RoomState, socketId: string): Player | null 
 
 /** Picks `count` imposters uniformly. They all share one video (section 3). */
 export function pickImposters(room: RoomState, count: number): string[] {
-  return shuffle(room.players.map((p) => p.id)).slice(0, Math.max(1, count));
+  return shuffle(activePlayers(room).map((p) => p.id)).slice(0, Math.max(1, count));
 }
 
 export const TURN_SECONDS = 10;
@@ -417,9 +456,11 @@ export function castVote(
   if (room.phase !== 'deliberation') return { ok: false, reason: 'not_voting' };
   if (voterId === targetId) return { ok: false, reason: 'self' };
   if (room.votes[voterId]) return { ok: false, reason: 'already_voted' };
-  // Section 3: the round-1 accused neither votes nor stands in round 2.
-  if (room.accusedIds.includes(voterId)) return { ok: false, reason: 'not_eligible' };
-  if (room.accusedIds.includes(targetId)) return { ok: false, reason: 'not_a_candidate' };
+  // Anyone out of play neither votes nor stands: the round-1 accused in a
+  // 2-imposter game (section 3), and the Custom author all round (section 4).
+  const eligible = new Set(activePlayers(room).map((p) => p.id));
+  if (!eligible.has(voterId)) return { ok: false, reason: 'not_eligible' };
+  if (!eligible.has(targetId)) return { ok: false, reason: 'not_a_candidate' };
 
   // During a tie re-vote the ballot is restricted to the tied players, and
   // only the voters asked to recast may vote (section 8).

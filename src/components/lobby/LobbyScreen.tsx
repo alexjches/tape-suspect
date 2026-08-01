@@ -109,14 +109,21 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
     const next = ids[(current + step + ids.length) % ids.length];
     actions.updateSettings(code, { videoCategory: next });
   }
-  const enoughPlayers = room.players.length >= MIN_PLAYERS;
+  // Section 4: on a Custom round whoever loaded the tapes sits out, so the
+  // lobby needs one more head than a pool round to field the same game.
+  const sittingOut =
+    !hasRandomVideoCategory && room.customVideoAuthorId
+      ? room.players.find((p) => p.id === room.customVideoAuthorId)
+      : undefined;
+  const playingCount = room.players.length - (sittingOut ? 1 : 0);
+  const enoughPlayers = playingCount >= MIN_PLAYERS;
   const videosReady =
     hasRandomVideoCategory || (room.settings.hasNormalVideo && room.settings.hasImposterVideo);
   const canStart = enoughPlayers && videosReady;
 
   // Keep at least MIN_PLAYERS slots on screen so the gap to a legal start is
   // visible rather than implied by a disabled button.
-  const emptySlots = Math.max(0, MIN_PLAYERS - room.players.length);
+  const emptySlots = Math.max(0, MIN_PLAYERS - playingCount);
 
   return (
     <div className="view-panel active-view">
@@ -130,6 +137,15 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
           {error && (
             <div className="word-phase-banner" style={{ display: 'block', marginBottom: 16 }}>
               ⛔ {error}
+            </div>
+          )}
+
+          {/* Section 4: say who is sitting out before anyone hits start —
+              finding out when the tape rolls is a nasty surprise. */}
+          {sittingOut && (
+            <div className="word-phase-banner" style={{ display: 'block', marginBottom: 16 }}>
+              👁️ {sittingOut.name.toUpperCase()} LOADED THE TAPES AND SITS THIS ROUND OUT —
+              NEEDS {MIN_PLAYERS} OTHERS TO PLAY
             </div>
           )}
 
@@ -157,6 +173,14 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
                   </div>
 
                   {player.isHost && <span className="player-host-tag">LOBBY HOST</span>}
+                  {player.id === sittingOut?.id && (
+                    <span
+                      className="player-host-tag"
+                      style={{ top: 'auto', bottom: -10, background: 'var(--neon-cyan)' }}
+                    >
+                      SITTING OUT
+                    </span>
+                  )}
 
                   <div className="player-tag" style={skin.tag}>
                     PLAYER-{i + 1}
@@ -265,10 +289,10 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
                 </button>
                 <span className="osd-text" style={{ color: canStart ? 'var(--neon-green)' : '#aaa' }}>
                   {!enoughPlayers
-                    ? `NEED ${MIN_PLAYERS} PLAYERS (${room.players.length}/${MIN_PLAYERS})`
+                    ? `NEED ${MIN_PLAYERS} PLAYERS (${playingCount}/${MIN_PLAYERS})`
                     : !videosReady
                     ? 'LOAD BOTH TAPES FIRST'
-                    : `${room.players.length} PLAYERS ARMED`}
+                    : `${playingCount} PLAYERS ARMED`}
                 </span>
               </>
             ) : (

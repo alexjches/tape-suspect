@@ -58,6 +58,10 @@ Two 2-imposter rules cut across the normal ones. `resolveVote()` gains an `allIm
 
 **Results ends the lobby; `game:rejoin` re-forms it.** There is deliberately no host-only "replay everyone" button — a finished round puts every player out, and each one opts back in for themselves. The first Rejoin runs `reformLobby()`: the room drops back to `lobby` with its settings and `usedVideoIds` intact, the clicker becomes host (the old one may never come back), and everyone else moves to `room.pastPlayers` and is taken out of the socket.io room so a lobby they haven't opted into stops updating the results screen under them. Later Rejoins restore identity from `pastPlayers` rather than trusting the client to say who it is, and re-`join` the channel. Rejoining twice is a no-op, and a room that emptied out answers with an error instead of resurrecting itself.
 
+**The Custom genre's author sits the round out (section 4).** They pasted both links, so they already know which tape is which. `room.customVideoAuthorId` records whoever last set the URLs — tracked rather than assumed to be the host, because the host can be handed on afterwards and it's the person who saw the links who knows. At `game:start` on a Custom round `assignSpectator()` flags them, and from there `activePlayers()` excludes them exactly like the round-1 accused: no video, no place in the turn order, no vote, no imposter draw, and a zero reward (paying participation coins would let a host farm them without playing). The flag is per-round and cleared on the next start, so it follows the tapes rather than the person.
+
+The knock-on: a Custom lobby needs **5** people to field a 4-player game, and the start check counts non-spectators. The lobby says who is sitting out before anyone hits start rather than springing it when the tape rolls.
+
 **Tie-breaking (section 8)** lives in `resolveVote()` / `beginRevote()` in `gameState.ts`. On a tie, voters who backed *neither* tied candidate are the swing voters: only their ballots are cleared, and they recast restricted to the tied pair. Voters already behind a tied candidate keep their vote. If there are no swing voters at all, the whole ballot re-runs among the tied players and loops until somebody switches — the round cannot conclude on a tie. `revoteCandidates` being non-null is what marks a restricted ballot.
 
 **Adding a socket event requires edits in three places**, and doing two of three fails silently:
@@ -91,7 +95,7 @@ Verified against `src/` as of this file's writing. These are bugs-against-spec, 
 
 Phase 1 (spec §16) closed most of the original gaps. **Fixed and verified:** role secrecy, single imposter, lobby size 4–10, reward values, combined 90s deliberation window, server-authoritative vote timer, split-vote re-vote and tie-break loops, per-player Ready Check, and the `none` comms mode.
 
-Phase 2 so far: the full genre list (§4), the `/content/videos.json` config with per-lobby no-repeat (§14), the host controls from §4 — manual host transfer (`room:transferHost`) plus mid-lobby settings changes — the Apple provider swap (§11), and the 2-imposter two-round flow (§3). `room:updateSettings` is now guarded to the `lobby` phase, because §4 scopes those changes to *between* rounds; changing genre clears both loaded URLs so a Custom lobby cannot start on the previous round's pool clips.
+Phase 2 is closed. Delivered: the full genre list (§4), the `/content/videos.json` config with per-lobby no-repeat (§14), the host controls from §4 — manual host transfer (`room:transferHost`) plus mid-lobby settings changes — the Apple provider swap (§11), the 2-imposter two-round flow (§3), and the Custom-genre sit-out (§4). `room:updateSettings` is now guarded to the `lobby` phase, because §4 scopes those changes to *between* rounds; changing genre clears both loaded URLs so a Custom lobby cannot start on the previous round's pool clips.
 
 `ChatType` is `'text' | 'voice' | 'video' | 'none'`, but the host form on `/dashboard` deliberately offers only a text on/off toggle (`'text'` or `'none'`) — §16 scopes Phase 1 to "text chat only (+ 'None' comms option)". The other two values stay in the union and in the lobby-list pill lookup so Phase 2 only has to add the buttons back; don't delete them.
 
@@ -99,7 +103,6 @@ Still outstanding:
 
 | Area | Spec (`docs/BUILD-PLAN.md`) | Code today | Phase |
 |---|---|---|---|
-| Custom genre | A host who picks Custom cannot play that round — they already know the answers (§4) | Custom is selectable but the host still plays | 2 |
 | Voting visibility | Host picks Public or Anonymous (§4) | Always broadcasts a live tally | 3 |
 | Currency | Persistent, account-bound (§9, §11) | localStorage only (`useShop.ts`) | 3 |
 | Reconnect | — | Identity is `socket.id`, so a refresh makes a new player and drops you from the round | — |

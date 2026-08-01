@@ -81,14 +81,18 @@ export function DeliberationScreen({
   // Section 3: someone ejected in round 1 neither votes nor stands in round 2.
   const accusedIds = room.accusedIds ?? [];
   const amAccused = accusedIds.includes(socketId);
+  // Section 4: the Custom author neither votes nor stands, all round.
+  const isOut = (id: string) =>
+    accusedIds.includes(id) || !!room.players.find((p) => p.id === id)?.isSpectator;
+  const amSpectator = !!room.players.find((p) => p.id === socketId)?.isSpectator;
   const totalRounds = room.totalRounds ?? 1;
   const gameRound = room.gameRound ?? 1;
 
-  const locked = (inRevote && !canRecast) || amAccused;
+  const locked = (inRevote && !canRecast) || amAccused || amSpectator;
 
   const handleVote = (targetId: string) => {
     if (myVote || targetId === socketId || locked) return;
-    if (accusedIds.includes(targetId)) return;
+    if (isOut(targetId)) return;
     if (inRevote && !revoteCandidates!.includes(targetId)) return;
 
     setMyVote(targetId);
@@ -125,7 +129,9 @@ export function DeliberationScreen({
                 {totalRounds > 1 ? ` — VOTE ${gameRound} OF ${totalRounds}` : ''}
               </h2>
               <p className="osd-text" style={{ color: '#aaa', marginTop: 4 }}>
-                {amAccused
+                {amSpectator
+                  ? 'You loaded the tapes — you can watch, but not vote'
+                  : amAccused
                   ? 'You were ejected — you can watch, but the ballot is closed to you'
                   : locked
                   ? 'Your vote stands — waiting on the swing voters to break the tie'
@@ -158,7 +164,7 @@ export function DeliberationScreen({
               const color = CHANNEL_COLORS[i % CHANNEL_COLORS.length];
               const votes = voteTally?.tally?.[player.id] ?? 0;
               const isMe = player.id === socketId;
-              const ejected = accusedIds.includes(player.id);
+              const ejected = isOut(player.id);
               const onBallot =
                 !ejected && (!inRevote || revoteCandidates!.includes(player.id));
               const selectable = !myVote && !isMe && !locked && onBallot;

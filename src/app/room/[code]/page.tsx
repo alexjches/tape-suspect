@@ -162,6 +162,32 @@ export default function RoomPage() {
     );
   }
 
+  // Section 4: whoever supplied the Custom tapes sits the round out, so they
+  // get no assignment and there is nothing to play them. They still watch the
+  // rest of the round unfold from the word phase on.
+  const amSpectator = !!state.room.players.find((p) => p.id === socketId)?.isSpectator;
+  if (state.phase === 'playing' && amSpectator) {
+    return (
+      <CrtShell badge={code}>
+        <div className="view-panel active-view" style={{ display: 'grid', placeItems: 'center' }}>
+          <div className="brutal-card" style={{ maxWidth: 440, textAlign: 'center' }}>
+            <div style={{ fontSize: '3rem' }}>👁️</div>
+            <h2 className="brutal-title" style={{ fontSize: '1.5rem' }}>
+              SITTING THIS ONE OUT
+            </h2>
+            <p className="osd-text" style={{ color: '#aaa', margin: '10px 0' }}>
+              You loaded both tapes, so you already know which is which. The
+              others are watching now — you&apos;ll be back for the results.
+            </p>
+            <div className="osd-text" style={{ color: 'var(--neon-cyan)' }}>
+              ⏳ TAPES ROLLING…
+            </div>
+          </div>
+        </div>
+      </CrtShell>
+    );
+  }
+
   // The video phase takes over the whole viewport — no CRT chrome over it.
   if (state.phase === 'playing' && state.assignment) {
     return (

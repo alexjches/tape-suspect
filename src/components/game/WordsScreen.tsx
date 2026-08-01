@@ -31,6 +31,11 @@ export function WordsScreen({ room, socketId, code, words, turnState, actions }:
   const totalRounds = room.totalRounds ?? 1;
   const gameRound = room.gameRound ?? 1;
   const amAccused = accusedIds.includes(socketId);
+  // Section 4: the Custom author is out of play for the whole round, the same
+  // way the round-1 accused is out for round 2.
+  const isOut = (id: string) =>
+    accusedIds.includes(id) || !!room.players.find((p) => p.id === id)?.isSpectator;
+  const amSpectator = !!room.players.find((p) => p.id === socketId)?.isSpectator;
   const accusedNames = accusedIds
     .map((id) => room.players.find((p) => p.id === id)?.name ?? '???')
     .join(', ');
@@ -65,9 +70,11 @@ export function WordsScreen({ room, socketId, code, words, turnState, actions }:
           </div>
         )}
 
-        {amAccused && (
+        {(amAccused || amSpectator) && (
           <div className="word-phase-banner" style={{ display: 'block', marginBottom: 20 }}>
-            👁️ YOU ARE OUT OF PLAY — WATCH THE REST UNFOLD
+            {amSpectator
+              ? '👁️ YOU LOADED THE TAPES — WATCHING ONLY'
+              : '👁️ YOU ARE OUT OF PLAY — WATCH THE REST UNFOLD'}
           </div>
         )}
 
@@ -109,7 +116,7 @@ export function WordsScreen({ room, socketId, code, words, turnState, actions }:
             {room.players.map((p) => {
               const used = turnState?.wordsUsed?.[p.id] ?? 0;
               const done = used >= room.settings.wordsPerPlayer;
-              const out = accusedIds.includes(p.id);
+              const out = isOut(p.id);
               return (
                 <div
                   className="word-chip"

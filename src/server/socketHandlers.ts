@@ -21,11 +21,11 @@ import {
   markVideoEnded,
   markReadyToAdvance,
   allReadyToAdvance,
-  connectedPlayers,
   activePlayers,
   totalGameRounds,
   beginNextGameRound,
   pickImposters,
+  assignSpectator,
   beginWordPhase,
   recordWord,
   playerFinishedTurn,
@@ -83,12 +83,16 @@ function sanitizeRoom(room: RoomState) {
     gameRound: room.gameRound,
     totalRounds: totalGameRounds(room),
     accusedIds: room.accusedIds,
+    // Not secret — it's whoever typed the Custom URLs, and the lobby needs to
+    // say who will be sitting out before anyone hits start (section 4).
+    customVideoAuthorId: room.customVideoAuthorId,
     players: room.players.map((p) => ({
       id: p.id,
       name: p.name,
       avatar: p.avatar,
       isHost: p.isHost,
       isReady: p.isReady,
+      isSpectator: p.isSpectator,
       status: p.status,
       cosmetics: p.cosmetics,
     })),
@@ -127,7 +131,8 @@ function setRoomTimer(code: string, fn: () => void, ms = 1000) {
 // ─── Ready check (section 6) ─────────────────────────────────────────────────
 
 function broadcastReadyState(room: RoomState, io: Server) {
-  const active = connectedPlayers(room);
+  // Spectators have no tape to finish, so they are not part of the count.
+  const active = activePlayers(room);
   io.to(room.code).emit('game:readyState', {
     videoEnded: room.videoEnded,
     readyToAdvance: room.readyToAdvance,
@@ -352,6 +357,7 @@ export function registerSocketHandlers(io: Server) {
           cosmetics: sanitizeCosmetics(data.cosmetics),
           isHost: true,
           isReady: false,
+          isSpectator: false,
           status: 'connected',
         };
 
@@ -371,7 +377,11 @@ export function registerSocketHandlers(io: Server) {
           videoCategory: isKnownCategory(data.videoCategory) ? data.videoCategory! : null,
         };
 
-        createRoom(code, host, settings);
+        const room = createRoom(code, host, settings);
+        // Custom links supplied at creation belong to the host who typed them.
+        if (settings.normalVideoUrl || settings.imposterVideoUrl) {
+          room.customVideoAuthorId = host.id;
+        }
         socket.join(code);
 
         io.emit('rooms:updated', getPublicRooms().map(sanitizeRoom));
@@ -413,6 +423,7 @@ export function registerSocketHandlers(io: Server) {
           cosmetics: sanitizeCosmetics(data.cosmetics),
           isHost: false,
           isReady: false,
+          isSpectator: false,
           status: 'connected',
         };
 
@@ -490,6 +501,10 @@ export function registerSocketHandlers(io: Server) {
         // Applied after the genre so an explicit URL in the same payload wins.
         if (data.normalVideoUrl !== undefined) room.settings.normalVideoUrl = data.normalVideoUrl;
         if (data.imposterVideoUrl !== undefined) room.settings.imposterVideoUrl = data.imposterVideoUrl;
+        if (data.normalVideoUrl || data.imposterVideoUrl) {
+          // Whoever pasted the links knows both answers and sits out (§4).
+          room.customVideoAuthorId = socket.id;
+        }
         // imposterCount is deliberately not settable in Phase 1 — it is pinned
         // to 1 (section 16). The 2-imposter option unlocks in Phase 2 at 7+
         // players and needs the two-round flow from section 3.
@@ -543,9 +558,23 @@ export function registerSocketHandlers(io: Server) {
     socket.on('game:start', (data: { code: string }) => {
       const room = getRoom(data.code);
       if (!room || room.hostId !== socket.id) return;
-      if (room.players.length < MIN_PLAYERS) {
+
+      // Section 4: on a Custom round the player who supplied the links sits
+      // out, so a Custom lobby needs one more head than a pool one to reach
+      // the same number of actual players. Work the checks off that count.
+      const genre = room.settings.videoCategory;
+      const isCustomRound = !genre || genre === CUSTOM_CATEGORY;
+      const sittingOut =
+        isCustomRound && room.customVideoAuthorId
+          ? room.players.find((p) => p.id === room.customVideoAuthorId)
+          : undefined;
+      const playingCount = room.players.length - (sittingOut ? 1 : 0);
+
+      if (playingCount < MIN_PLAYERS) {
         socket.emit('game:error', {
-          message: `Need at least ${MIN_PLAYERS} players to start`,
+          message: sittingOut
+            ? `Need ${MIN_PLAYERS} players besides ${sittingOut.name}, who supplied the tapes`
+            : `Need at least ${MIN_PLAYERS} players to start`,
         });
         return;
       }
@@ -554,7 +583,7 @@ export function registerSocketHandlers(io: Server) {
       // changes the whole shape of the round (section 3).
       if (
         room.settings.imposterCount >= 2 &&
-        room.players.length < TWO_IMPOSTER_MIN_PLAYERS
+        playingCount < TWO_IMPOSTER_MIN_PLAYERS
       ) {
         socket.emit('game:error', {
           message: `2 suspects needs ${TWO_IMPOSTER_MIN_PLAYERS}+ players — drop it to 1 or wait`,
@@ -565,8 +594,7 @@ export function registerSocketHandlers(io: Server) {
       // Pool genres draw two distinct clips from /content/videos.json, skipping
       // anything this lobby has already seen (section 14). Custom is the one
       // genre that keeps the host's own pair.
-      const genre = room.settings.videoCategory;
-      if (genre && genre !== CUSTOM_CATEGORY) {
+      if (!isCustomRound) {
         const pair = pickVideoPair(genre, room.usedVideoIds);
         if (!pair) {
           socket.emit('game:error', {
@@ -590,6 +618,8 @@ export function registerSocketHandlers(io: Server) {
 
       // resetRound clears per-round state but not roles, so assign after it.
       resetRound(room);
+      // Must run before the imposter pick — the sitter is not a candidate.
+      const spectator = assignSpectator(room, isCustomRound);
       // Section 3: both imposters watch the same secret video, so one pick of
       // N ids is all this needs.
       room.imposterIds = pickImposters(room, room.settings.imposterCount);
@@ -603,6 +633,9 @@ export function registerSocketHandlers(io: Server) {
       // must not carry `isImposter` even if no UI renders it; it would be
       // trivially readable from the network tab.
       room.players.forEach((player) => {
+        // The sitter gets no tape: they chose both, so there is nothing to
+        // show them and nothing they could honestly say about it.
+        if (player.isSpectator) return;
         const isImposter = room.imposterIds.includes(player.id);
         io.to(player.id).emit('game:assigned', {
           videoUrl: isImposter ? room.settings.imposterVideoUrl : room.settings.normalVideoUrl,
@@ -610,7 +643,10 @@ export function registerSocketHandlers(io: Server) {
       });
 
       io.to(data.code).emit('room:updated', sanitizeRoom(room));
-      console.log(`[Game] Started in room ${data.code}`);
+      console.log(
+        `[Game] Started in room ${data.code}` +
+          (spectator ? ` (${spectator.name} sitting out — supplied the tapes)` : '')
+      );
     });
 
     // ─── Game: Player's video loaded and ready to play ──────────────
@@ -934,7 +970,8 @@ function finalizeResults(room: RoomState, io: Server, accusedIds: string[]) {
         votes: tally[p.id] ?? 0,
         isImposter,
         wasAccused: accusedIds.includes(p.id),
-        coinReward: coinsFor(isImposter, imposterCount, impostersCaught, crewWins),
+        isSpectator: p.isSpectator,
+        coinReward: coinsFor(p.isSpectator, isImposter, imposterCount, impostersCaught, crewWins),
       };
     }),
   });
@@ -950,11 +987,22 @@ function finalizeResults(room: RoomState, io: Server, accusedIds: string[]) {
  * amount, and every imposter gets the same regardless of which was caught.
  */
 function coinsFor(
+  isSpectator: boolean,
   isImposter: boolean,
   imposterCount: number,
   impostersCaught: number,
   crewWins: boolean
 ) {
+  // Supplying the tapes is not playing, and paying for it would let a host
+  // farm the participation coins round after round without ever guessing.
+  if (isSpectator) {
+    return {
+      baseCoins: 0,
+      bonusCoins: 0,
+      total: 0,
+      reasons: ['Sat out — you supplied the tapes'],
+    };
+  }
   if (imposterCount >= 2) {
     const caught = Math.min(impostersCaught, 2);
     const total = isImposter
