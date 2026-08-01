@@ -12,6 +12,7 @@ import { GameResults } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
 import { useRouter } from 'next/navigation';
 import { useShop } from '@/hooks/useShop';
+import { tapeSkinStyles, equippedSticker } from '@/lib/cosmetics';
 
 interface Props {
   results: GameResults;
@@ -130,6 +131,11 @@ export function ResultsScreen({ results, socketId, actions, code }: Props) {
   // follows that player's role, not the overall outcome.
   const headlineWasImposter =
     !!results.mostVotedId && imposterIds.includes(results.mostVotedId);
+  // The cassette in the deck belongs to the accused, so it wears their skin
+  // and their label — section 10's "changes how you look in game".
+  const accusedCosmetics = results.players.find((p) => p.id === results.mostVotedId)?.cosmetics;
+  const tape = tapeSkinStyles(accusedCosmetics);
+  const sticker = equippedSticker(accusedCosmetics);
   const bannerColor =
     outcome === 'crew'
       ? 'var(--neon-green)'
@@ -160,15 +166,27 @@ export function ResultsScreen({ results, socketId, actions, code }: Props) {
             <div className="ejected-tape">
               <div
                 className={`vhs-tape${ejected ? ' imposter-selected' : ''}`}
-                style={{ transform: 'scale(0.65)', pointerEvents: 'none', marginTop: -30 }}
+                style={{
+                  ...tape?.shell,
+                  transform: 'scale(0.65)',
+                  pointerEvents: 'none',
+                  marginTop: -30,
+                }}
               >
                 <div
                   className="tape-tag"
-                  style={{ backgroundColor: 'var(--neon-magenta)', color: '#fff' }}
+                  style={tape?.tag ?? { backgroundColor: 'var(--neon-magenta)', color: '#fff' }}
                 >
                   {headlineWasImposter ? 'SUSPECT-X' : 'INNOCENT'}
                 </div>
-                <div className="tape-label">
+                <div
+                  className="tape-label"
+                  style={
+                    sticker
+                      ? { background: sticker.bg, color: sticker.color, borderColor: sticker.border }
+                      : tape?.label
+                  }
+                >
                   <div
                     className="tape-title"
                     style={{ fontSize: '1.1rem', color: ejected ? '#8a0060' : '#1e1e24' }}
@@ -182,12 +200,12 @@ export function ResultsScreen({ results, socketId, actions, code }: Props) {
                     <span>● EJECT</span>
                   </div>
                 </div>
-                <div className="tape-window-panel">
-                  <div className="spool">
-                    <div className="spool-gear" />
+                <div className="tape-window-panel" style={tape?.window}>
+                  <div className="spool" style={tape?.spool}>
+                    <div className="spool-gear" style={tape?.gear} />
                   </div>
-                  <div className="spool">
-                    <div className="spool-gear" />
+                  <div className="spool" style={tape?.spool}>
+                    <div className="spool-gear" style={tape?.gear} />
                   </div>
                 </div>
               </div>

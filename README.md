@@ -103,7 +103,8 @@ src/
 ├── hooks/
 │   ├── useRoom.ts          # socket listeners + the actions components call
 │   └── useShop.ts          # coin wallet and cosmetics (localStorage)
-├── lib/                    # socket, prisma, auth, avatars, videoParser, videoCategories
+├── lib/                    # socket, prisma, auth, avatars, videoParser,
+│                           #   videoCategories, cosmetics (catalogue + styles)
 └── server/
     ├── gameState.ts        # in-memory room store, turn order, vote resolution
     ├── videoLibrary.ts     # loads content/videos.json, picks each round's pair

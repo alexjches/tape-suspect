@@ -12,6 +12,7 @@ import type {
   DeliberationState,
 } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
+import { vcrSkinStyles } from '@/lib/cosmetics';
 
 // Console glow colours, assigned by seat so they stay stable across renders.
 const CHANNEL_COLORS = [
@@ -161,6 +162,8 @@ export function DeliberationScreen({
               const onBallot =
                 !ejected && (!inRevote || revoteCandidates!.includes(player.id));
               const selectable = !myVote && !isMe && !locked && onBallot;
+              // Same console, same skin as the lobby (section 10).
+              const skin = vcrSkinStyles(player.cosmetics, color);
 
               return (
                 <div
@@ -170,8 +173,7 @@ export function DeliberationScreen({
                   }`}
                   onClick={() => selectable && handleVote(player.id)}
                   style={{
-                    borderColor: color,
-                    boxShadow: `4px 4px 0px ${color}`,
+                    ...skin.shell,
                     cursor: selectable ? 'pointer' : 'not-allowed',
                     opacity: onBallot ? 1 : 0.4,
                   }}
@@ -179,23 +181,22 @@ export function DeliberationScreen({
                   <div className="monitor-osd">
                     CH. {i + 1} {isMe ? '- YOU' : '- REC'}
                   </div>
-                  <div
-                    className="player-tag"
-                    style={{ backgroundColor: color, color: '#000' }}
-                  >
+                  <div className="player-tag" style={skin.tag}>
                     {player.avatar} {player.isHost ? 'HOST' : `PLAYER-${i + 1}`}
                   </div>
-                  <div className="player-display">
-                    <div className="player-display-text">{player.name}</div>
-                    <div className="player-display-status">
+                  <div className="player-display" style={skin.display}>
+                    <div className="player-display-text" style={skin.displayText}>
+                      {player.name}
+                    </div>
+                    <div className="player-display-status" style={skin.status}>
                       <span>CH. {i + 1}</span>
                       <span style={{ color: 'var(--neon-yellow)' }}>
                         {votes} VOTE{votes === 1 ? '' : 'S'}
                       </span>
                     </div>
                   </div>
-                  <div className="player-vcr-slot loaded">
-                    <div className="player-vcr-door-flap" />
+                  <div className="player-vcr-slot loaded" style={skin.slot}>
+                    <div className="player-vcr-door-flap" style={skin.flap} />
                     <div className="player-vcr-inserted-tape">
                       <div className="inserted-tape-label" />
                       <div className="inserted-tape-spools">
@@ -209,11 +210,12 @@ export function DeliberationScreen({
                       className={`player-led${
                         player.status === 'connected' ? ' active' : ''
                       }`}
+                      style={player.status === 'connected' ? skin.led : undefined}
                     />
                     <div className="vcr-btns">
-                      <div className="vcr-btn" />
-                      <div className="vcr-btn" />
-                      <div className="vcr-btn" />
+                      <div className="vcr-btn" style={skin.button} />
+                      <div className="vcr-btn" style={skin.button} />
+                      <div className="vcr-btn" style={skin.button} />
                     </div>
                   </div>
                   {myVote === player.id && <div className="vote-stamp">SUSPECT</div>}

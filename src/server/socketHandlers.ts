@@ -44,6 +44,7 @@ import {
   RoomState,
 } from './gameState';
 import { CUSTOM_CATEGORY, isKnownCategory } from '../lib/videoCategories';
+import { sanitizeCosmetics } from '../lib/cosmetics';
 import { pickVideoPair, watchUrl } from './videoLibrary';
 
 // ── Phase 1 rule constants (docs/BUILD-PLAN.md) ──────────────────────
@@ -89,6 +90,7 @@ function sanitizeRoom(room: RoomState) {
       isHost: p.isHost,
       isReady: p.isReady,
       status: p.status,
+      cosmetics: p.cosmetics,
     })),
     settings: {
       isPublic: room.settings.isPublic,
@@ -329,6 +331,7 @@ export function registerSocketHandlers(io: Server) {
           playerName: string;
           avatar: string;
           userId: string | null;
+          cosmetics?: unknown;
           isPublic: boolean;
           normalVideoUrl?: string;
           imposterVideoUrl?: string;
@@ -346,6 +349,7 @@ export function registerSocketHandlers(io: Server) {
           userId: data.userId,
           name: data.playerName,
           avatar: data.avatar,
+          cosmetics: sanitizeCosmetics(data.cosmetics),
           isHost: true,
           isReady: false,
           status: 'connected',
@@ -381,7 +385,13 @@ export function registerSocketHandlers(io: Server) {
     socket.on(
       'room:join',
       (
-        data: { code: string; playerName: string; avatar: string; userId: string | null },
+        data: {
+          code: string;
+          playerName: string;
+          avatar: string;
+          userId: string | null;
+          cosmetics?: unknown;
+        },
         callback: (res: { success: boolean; room?: ReturnType<typeof sanitizeRoom>; error?: string }) => void
       ) => {
         const room = getRoom(data.code);
@@ -400,6 +410,7 @@ export function registerSocketHandlers(io: Server) {
           userId: data.userId,
           name: data.playerName,
           avatar: data.avatar,
+          cosmetics: sanitizeCosmetics(data.cosmetics),
           isHost: false,
           isReady: false,
           status: 'connected',
@@ -919,6 +930,7 @@ function finalizeResults(room: RoomState, io: Server, accusedIds: string[]) {
         id: p.id,
         name: p.name,
         avatar: p.avatar,
+        cosmetics: p.cosmetics,
         votes: tally[p.id] ?? 0,
         isImposter,
         wasAccused: accusedIds.includes(p.id),

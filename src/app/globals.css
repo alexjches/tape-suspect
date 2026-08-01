@@ -53,7 +53,7 @@
   --link-accent: #00e5ff; /* text links                                 */
 
   /* Accents shifted to the arcade set. Yellow is deliberately untouched:
-     it is the wordmark, the VHS EFFECT button and the active shop tab,
+     it is the wordmark and the active shop tab,
      and #ffee00 already belongs in this palette. */
   --neon-magenta: #ff2e88;
   --neon-cyan:    #00e5ff;
@@ -233,6 +233,10 @@ footer {
   right: 0;
   margin-top: 0;
   text-align: center;
+  /* The container is a fixed 400px, which the longer status strings overrun.
+     Let it spill evenly either side rather than wrap onto a second line —
+     wrapping is what the fixed `top` above exists to avoid. */
+  white-space: nowrap;
 }
 
 /* The results eject has the same shape of problem as the insertion caption
@@ -266,4 +270,14 @@ footer {
 
 .watch-ready-bar .osd-text {
   text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000;
+}
+
+/* REC lives bottom-right, not top-left. .camcorder-hud is a full-bleed
+   column with the row as its only flow child, so margin-top pushes the row
+   down and flex-end pushes the badge across. The extra right margin clears
+   the .hud-bracket-br corner mark, which is pinned at 16px. */
+.camcorder-hud .hud-row {
+  margin-top: auto;
+  justify-content: flex-end;
+  margin-right: 28px;
 }

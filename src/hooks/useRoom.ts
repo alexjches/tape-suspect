@@ -20,6 +20,7 @@ import {
   TurnState,
   DeliberationState,
   ChatType,
+  EquippedCosmetics,
 } from '@/types';
 
 export interface RoomState {
@@ -211,11 +212,17 @@ export function useRoom(code: string | null) {
 
   const actions = {
     joinRoom: useCallback(
-      (playerName: string, avatar: string, userId: string | null, code: string) => {
+      (
+        playerName: string,
+        avatar: string,
+        userId: string | null,
+        code: string,
+        cosmetics?: EquippedCosmetics
+      ) => {
         return new Promise<RoomPublic>((resolve, reject) => {
           socket.emit(
             'room:join',
-            { code, playerName, avatar, userId },
+            { code, playerName, avatar, userId, cosmetics },
             (res: { success: boolean; room?: RoomPublic; error?: string }) => {
               if (res.success && res.room) {
                 setState((prev) => ({

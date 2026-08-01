@@ -16,6 +16,8 @@ export interface PlayerPublic {
   isHost: boolean;
   isReady: boolean;
   status: 'connected' | 'disconnected';
+  /** Equipped cosmetics (section 10) — what everyone else sees you wearing. */
+  cosmetics: EquippedCosmetics;
 }
 
 export interface RoomPublic {
@@ -90,6 +92,7 @@ export interface GameResults {
     name: string;
     avatar: string;
     votes: number;
+    cosmetics: EquippedCosmetics;
     isImposter: boolean;
     wasAccused: boolean;
     coinReward: CoinReward;

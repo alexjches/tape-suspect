@@ -11,6 +11,7 @@ import { RoomPublic } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
 import { VideoSetupPanel } from './VideoSetupPanel';
 import { VIDEO_CATEGORIES, CUSTOM_CATEGORY } from '@/lib/videoCategories';
+import { vcrSkinStyles } from '@/lib/cosmetics';
 import { useRouter } from 'next/navigation';
 
 // Section 20: lobby size is 4–10. Mirrors MIN_PLAYERS/MAX_PLAYERS in
@@ -137,14 +138,16 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
               const color = CHANNEL_COLORS[i % CHANNEL_COLORS.length];
               const isMe = player.id === socketId;
               const online = player.status === 'connected';
+              // Section 10: a bought VCR skin repaints your console for
+              // everyone, not just you — cosmetics ride along on the roster.
+              const skin = vcrSkinStyles(player.cosmetics, color);
 
               return (
                 <div
                   key={player.id}
                   className={`vhs-player${online ? ' ready' : ''}`}
                   style={{
-                    borderColor: color,
-                    boxShadow: `4px 4px 0px ${color}`,
+                    ...skin.shell,
                     cursor: 'default',
                     opacity: online ? 1 : 0.45,
                   }}
@@ -155,7 +158,7 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
 
                   {player.isHost && <span className="player-host-tag">LOBBY HOST</span>}
 
-                  <div className="player-tag" style={{ backgroundColor: color, color: '#000' }}>
+                  <div className="player-tag" style={skin.tag}>
                     PLAYER-{i + 1}
                   </div>
 
@@ -188,27 +191,30 @@ export function LobbyScreen({ room, socketId, isHost, actions, code, error }: Pr
                     </button>
                   )}
 
-                  <div className="player-display">
-                    <div className="player-display-text">
+                  <div className="player-display" style={skin.display}>
+                    <div className="player-display-text" style={skin.displayText}>
                       {player.name}
                       {isMe ? ' (YOU)' : ''}
                     </div>
-                    <div className="player-display-status">
+                    <div className="player-display-status" style={skin.status}>
                       <span>CH. {i + 1}</span>
                       <span>{online ? '● READY' : '○ SIGNAL LOST'}</span>
                     </div>
                   </div>
 
-                  <div className="player-vcr-slot">
-                    <div className="player-vcr-door-flap" />
+                  <div className="player-vcr-slot" style={skin.slot}>
+                    <div className="player-vcr-door-flap" style={skin.flap} />
                   </div>
 
                   <div className="player-controls">
-                    <div className={`player-led${online ? ' active' : ''}`} />
+                    <div
+                      className={`player-led${online ? ' active' : ''}`}
+                      style={online ? skin.led : undefined}
+                    />
                     <div className="vcr-btns">
-                      <div className="vcr-btn" />
-                      <div className="vcr-btn" />
-                      <div className="vcr-btn" />
+                      <div className="vcr-btn" style={skin.button} />
+                      <div className="vcr-btn" style={skin.button} />
+                      <div className="vcr-btn" style={skin.button} />
                     </div>
                   </div>
                 </div>

@@ -18,6 +18,8 @@ import type { GameAssignment, ReadyState } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
 import { VideoPlayer, VideoPlayerHandle } from './VideoPlayer';
 import { getSocket } from '@/lib/socket';
+import { useShop } from '@/hooks/useShop';
+import { tapeSkinStyles, equippedSticker } from '@/lib/cosmetics';
 
 interface Props {
   code: string;
@@ -38,6 +40,12 @@ export function GameScreen({
   socketId,
   actions,
 }: Props) {
+  // The cassette going into the deck is yours, so it wears your loadout —
+  // straight off localStorage, no round trip (section 10).
+  const { equipped } = useShop();
+  const tape = tapeSkinStyles(equipped);
+  const sticker = equippedSticker(equipped);
+
   const playerRef = useRef<VideoPlayerHandle>(null);
   const [playState, setPlayState] = useState<PlayState>('loading');
   const [hasSignaledLoaded, setHasSignaledLoaded] = useState(false);
@@ -161,11 +169,20 @@ export function GameScreen({
               <div className="vcr-gate-door">INSERT TAPE</div>
             </div>
             <div className="inserting-tape">
-              <div className="compact-tape">
-                <div className="compact-label">📼 {code}</div>
+              <div className="compact-tape" style={tape?.shell}>
+                <div
+                  className="compact-label"
+                  style={
+                    sticker
+                      ? { background: sticker.bg, color: sticker.color, borderColor: sticker.border }
+                      : tape?.label
+                  }
+                >
+                  {sticker ? sticker.text : `📼 ${code}`}
+                </div>
                 <div className="compact-spools">
-                  <div className="c-spool" />
-                  <div className="c-spool" />
+                  <div className="c-spool" style={tape?.spool} />
+                  <div className="c-spool" style={tape?.spool} />
                 </div>
               </div>
             </div>

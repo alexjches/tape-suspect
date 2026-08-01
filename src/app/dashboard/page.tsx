@@ -39,7 +39,7 @@ const inputStyle: React.CSSProperties = {
 
 function DashboardContent() {
   const { data: session, status } = useSession();
-  const { coins } = useShop();
+  const { coins, equipped: cosmetics } = useShop();
   const router = useRouter();
   const searchParams = useSearchParams();
   const isGuest = searchParams.get('guest') === '1';
@@ -119,7 +119,7 @@ function DashboardContent() {
       setError('');
       getSocket().emit(
         'room:join',
-        { code: trimmed, playerName: playerName || 'Guest', avatar: playerAvatar, userId },
+        { code: trimmed, playerName: playerName || 'Guest', avatar: playerAvatar, userId, cosmetics },
         (res: { success: boolean; error?: string }) => {
           if (res.success) router.push(`/room/${trimmed}`);
           else {
@@ -129,7 +129,7 @@ function DashboardContent() {
         }
       );
     },
-    [playerName, playerAvatar, userId, router]
+    [playerName, playerAvatar, userId, cosmetics, router]
   );
 
   const customValid =
@@ -149,6 +149,7 @@ function DashboardContent() {
         playerName: playerName || 'Guest',
         avatar: playerAvatar,
         userId,
+        cosmetics,
         isPublic,
         chatType,
         videoCategory: category,
@@ -163,7 +164,7 @@ function DashboardContent() {
         }
       }
     );
-  }, [customValid, playerName, playerAvatar, userId, isPublic, chatType, category, crewUrl, imposterUrl, router]);
+  }, [customValid, playerName, playerAvatar, userId, cosmetics, isPublic, chatType, category, crewUrl, imposterUrl, router]);
 
   // Redirect logged-out non-guests
   if (status === 'unauthenticated' && !isGuest) {

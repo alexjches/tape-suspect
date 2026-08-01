@@ -8,8 +8,6 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useSession } from 'next-auth/react';
 import Link from 'next/link';
 
-const CRT_PREF_KEY = 'imposter_crt_effect';
-
 interface Props {
   children: ReactNode;
   /** Shown next to the logo, e.g. a room code. */
@@ -20,6 +18,13 @@ interface Props {
   headerExtra?: ReactNode;
   /** REC dot pulses while true — on during the watch phase. */
   recording?: boolean;
+  /**
+   * Makes the wordmark a link out to the lobby router. On in the pre-game
+   * lobby, where walking away costs nothing; off once a round is under way,
+   * because identity is socket.id and there is no way back into a round you
+   * have left.
+   */
+  logoLeaves?: boolean;
   /**
    * Marketing/console layout (home.html, join-host.html) rather than the
    * in-game `.view-panel` stack: fixed-height scroll area plus a footer.
@@ -34,10 +39,8 @@ export function CrtShell({
   headerExtra,
   recording = false,
   home = false,
+  logoLeaves = false,
 }: Props) {
-  // Default the effect on, matching the prototype's `crt-active` markup.
-  const [crtOn, setCrtOn] = useState(true);
-
   // Where the header logo goes. /dashboard gates on `?guest=1` alone — a
   // saved guest identity in localStorage is not enough — so a bare
   // /dashboard link bounces straight back to / for anyone without an
@@ -49,8 +52,8 @@ export function CrtShell({
   const { status } = useSession();
   const [hasGuestIdentity, setHasGuestIdentity] = useState(false);
 
-  // Read after mount for the same reason as the CRT preference below:
-  // touching localStorage during render desyncs server and client HTML.
+  // Read after mount: touching localStorage during render would desync
+  // server and client HTML and trip hydration.
   useEffect(() => {
     setHasGuestIdentity(localStorage.getItem('imposter_guest_name') !== null);
   }, []);
@@ -62,32 +65,24 @@ export function CrtShell({
         ? '/dashboard?guest=1'
         : '/';
 
-  // Restore the saved preference after mount. Reading localStorage during
-  // render would desync server and client HTML and trip hydration.
-  useEffect(() => {
-    const stored = localStorage.getItem(CRT_PREF_KEY);
-    if (stored !== null) setCrtOn(stored === 'on');
-  }, []);
+  const linkLogo = home || logoLeaves;
 
-  useEffect(() => {
-    localStorage.setItem(CRT_PREF_KEY, crtOn ? 'on' : 'off');
-  }, [crtOn]);
-
+  // The CRT effect is always on — it is the look, not a setting.
   return (
     <div
       id="crt-viewport"
-      className={`crt-viewport${crtOn ? ' crt-active' : ''}${home ? ' home-viewport' : ''}`}
+      className={`crt-viewport crt-active${home ? ' home-viewport' : ''}`}
     >
       <header>
         <div className="logo-container">
-          {/* Clickable only on the marketing/console routes. In-game the
-              logo is inert: player identity is socket.id with no rejoin
-              path, so navigating away mid-round drops you from the game for
-              good. LEAVE is the deliberate exit; the logo must not be a
-              second, unlabelled one sitting beside the room code.
+          {/* A link on the marketing/console routes and in the pre-game
+              lobby, where leaving costs nothing. Inert once a round is under
+              way: identity is socket.id with no way back into a round you
+              have left, so the logo must not be an unlabelled second exit
+              sitting beside the room code — LEAVE is the deliberate one.
               The badge stays outside the link either way — it's a room code
               or page label, not part of the home affordance. */}
-          {home ? (
+          {linkLogo ? (
             <Link
               href={logoHref}
               className="logo-home-link"
@@ -118,16 +113,7 @@ export function CrtShell({
           )}
         </div>
 
-        <div className="header-controls">
-          {headerExtra}
-          <button
-            id="crt-toggle"
-            className="btn-brutal yellow"
-            onClick={() => setCrtOn((v) => !v)}
-          >
-            VHS EFFECT: {crtOn ? 'ON' : 'OFF'}
-          </button>
-        </div>
+        {headerExtra && <div className="header-controls">{headerExtra}</div>}
       </header>
 
       {/* Camcorder HUD overlays */}

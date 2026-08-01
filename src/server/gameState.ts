@@ -10,6 +10,8 @@
 //   deliberation ONE 90s window with chat and voting live simultaneously (8)
 //   results      roles revealed, coins awarded (9)
 
+import type { EquippedCosmetics } from '../types';
+
 export type PlayerStatus = 'connected' | 'disconnected';
 
 export interface Player {
@@ -17,6 +19,12 @@ export interface Player {
   userId: string | null; // DB user id (null for guests)
   name: string;
   avatar: string;
+  /**
+   * Equipped cosmetics (section 10). Broadcast to the whole room — a skin
+   * nobody else can see is not a cosmetic. Carries no role information, so
+   * it is safe alongside the secrecy invariant.
+   */
+  cosmetics: EquippedCosmetics;
   isHost: boolean;
   isReady: boolean;    // true when their video is loaded & ready to play
   status: PlayerStatus;

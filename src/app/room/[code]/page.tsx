@@ -8,6 +8,7 @@ import { useSession } from 'next-auth/react';
 import Link from 'next/link';
 import { getSocket } from '@/lib/socket';
 import { useRoom } from '@/hooks/useRoom';
+import { useShop } from '@/hooks/useShop';
 import { CrtShell } from '@/components/vhs/CrtShell';
 import { LobbyScreen } from '@/components/lobby/LobbyScreen';
 import { GameScreen } from '@/components/game/GameScreen';
@@ -22,6 +23,7 @@ export default function RoomPage() {
   const router = useRouter();
   const { data: session, status } = useSession();
   const { state, actions } = useRoom(code);
+  const { equipped: cosmetics } = useShop();
   const [socketId, setSocketId] = useState('');
   const [hasAttemptedJoin, setHasAttemptedJoin] = useState(false);
 
@@ -60,16 +62,17 @@ export default function RoomPage() {
           session.user.name,
           (session.user as any).image || '🎮',
           (session.user as any).id || null,
-          code
+          code,
+          cosmetics
         )
         .catch((err) => console.error('Auto-join failed:', err));
     } else if (storedName) {
       setHasAttemptedJoin(true);
       actions
-        .joinRoom(storedName, storedAvatar, null, code)
+        .joinRoom(storedName, storedAvatar, null, code, cosmetics)
         .catch((err) => console.error('Guest auto-join failed:', err));
     }
-  }, [socketId, code, status, session, state.room, hasAttemptedJoin, actions]);
+  }, [socketId, code, status, session, state.room, hasAttemptedJoin, actions, cosmetics]);
 
   const handleGuestJoin = () => {
     if (localGuestName.trim().length < 2 || !code) return;
@@ -77,7 +80,7 @@ export default function RoomPage() {
     localStorage.setItem('imposter_guest_avatar', localGuestAvatar);
     setHasAttemptedJoin(true);
     actions
-      .joinRoom(localGuestName.trim(), localGuestAvatar, null, code)
+      .joinRoom(localGuestName.trim(), localGuestAvatar, null, code, cosmetics)
       .catch((err) => console.error('Guest join failed:', err));
   };
 
@@ -174,7 +177,11 @@ export default function RoomPage() {
   }
 
   return (
-    <CrtShell badge={code} recording={state.phase === 'words'}>
+    <CrtShell
+      badge={code}
+      recording={state.phase === 'words'}
+      logoLeaves={state.phase === 'lobby'}
+    >
       {state.phase === 'lobby' && (
         <LobbyScreen
           room={state.room}
