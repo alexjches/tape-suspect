@@ -60,15 +60,25 @@ export function DeliberationScreen({
   const eligibleVoters = deliberation?.eligibleVoters ?? null;
   const voteRound = deliberation?.voteRound ?? 1;
 
+  // Section 4: an anonymous lobby sees no live ballot at all — no running
+  // counts, no arrows, and no roster of who has to recast. Only the final
+  // tally on the results screen.
+  const anonymous = room.settings.voteVisibility === 'anonymous';
+
+  // Whether *I* may recast. Anonymous lobbies are told this directly, since
+  // publishing the eligible roster would leak who backed whom.
+  const canRecast =
+    deliberation?.canRecast ?? (!eligibleVoters || eligibleVoters.includes(playerId));
+
   // A re-vote clears the ballots of whoever must recast, so let them vote
   // again. Players who kept their vote stay locked (section 8).
   useEffect(() => {
     if (!revoteCandidates) return;
-    if (!eligibleVoters || eligibleVoters.includes(playerId)) {
+    if (canRecast) {
       setMyVote(null);
       setVoteError(null);
     }
-  }, [revoteCandidates, eligibleVoters, playerId, voteRound]);
+  }, [revoteCandidates, canRecast, voteRound]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
@@ -76,7 +86,13 @@ export function DeliberationScreen({
 
   const chatEnabled = room.settings.chatType === 'text';
   const inRevote = !!revoteCandidates;
-  const canRecast = !eligibleVoters || eligibleVoters.includes(playerId);
+
+  // Public lobbies show the arrows: voter -> who they picked (§4). Comes off
+  // vote:tally, which is what a cast vote actually pushes; room.votes only
+  // refreshes on roster changes and would sit frozen all phase. Null in an
+  // anonymous lobby, because the server never sends the ballots.
+  const nameOf = (id: string) => room.players.find((p) => p.id === id)?.name ?? '???';
+  const votedFor: Record<string, string> = voteTally?.ballots ?? {};
 
   // Section 3: someone ejected in round 1 neither votes nor stands in round 2.
   const accusedIds = room.accusedIds ?? [];
@@ -128,6 +144,14 @@ export function DeliberationScreen({
                 🚨 EJECT VOTING SYSTEM
                 {totalRounds > 1 ? ` — VOTE ${gameRound} OF ${totalRounds}` : ''}
               </h2>
+              {/* Say which mode is in force before anyone commits a vote —
+                  whether the room can see it changes how you play it. */}
+              <div
+                className="osd-text"
+                style={{ color: anonymous ? 'var(--neon-yellow)' : 'var(--neon-cyan)' }}
+              >
+                {anonymous ? '🕶 ANONYMOUS BALLOT' : '👁 PUBLIC BALLOT'}
+              </div>
               <p className="osd-text" style={{ color: '#aaa', marginTop: 4 }}>
                 {amSpectator
                   ? 'You loaded the tapes — you can watch, but not vote'
@@ -147,9 +171,12 @@ export function DeliberationScreen({
           {inRevote && (
             <div className="word-phase-banner" style={{ display: 'block' }}>
               ⚠️ RE-VOTE {voteRound > 1 ? `#${voteRound - 1}` : ''} — ballot limited to{' '}
-              {revoteCandidates!
-                .map((id) => room.players.find((p) => p.id === id)?.name ?? '???')
-                .join(' vs ')}
+              {revoteCandidates!.map(nameOf).join(' vs ')}
+              {/* Public lobbies can name the swing voters; anonymous ones
+                  cannot, because being on that list says who you backed. */}
+              {!anonymous && eligibleVoters && eligibleVoters.length > 0 && (
+                <span> · recasting: {eligibleVoters.map(nameOf).join(', ')}</span>
+              )}
             </div>
           )}
 
@@ -195,10 +222,20 @@ export function DeliberationScreen({
                       {player.name}
                     </div>
                     <div className="player-display-status" style={skin.status}>
-                      <span>CH. {i + 1}</span>
-                      <span style={{ color: 'var(--neon-yellow)' }}>
-                        {votes} VOTE{votes === 1 ? '' : 'S'}
+                      {/* Public: who they picked, live (§4). Anonymous: the
+                          console says nothing at all — the only vote state
+                          anyone gets is the progress count and their own
+                          SUSPECT stamp. */}
+                      <span>
+                        {!anonymous && votedFor[player.id]
+                          ? `▶ ${nameOf(votedFor[player.id])}`
+                          : `CH. ${i + 1}`}
                       </span>
+                      {!anonymous && (
+                        <span style={{ color: 'var(--neon-yellow)' }}>
+                          {votes} VOTE{votes === 1 ? '' : 'S'}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="player-vcr-slot loaded" style={skin.slot}>

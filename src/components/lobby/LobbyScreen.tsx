@@ -99,6 +99,7 @@ export function LobbyScreen({ room, playerId, isHost, actions, code, error }: Pr
     : 'LINE-1 (CUSTOM)';
   const maxPlayers = room.settings.maxPlayers;
   const chatType = room.settings.chatType ?? 'text';
+  const anonymousBallot = room.settings.voteVisibility === 'anonymous';
   const imposterCount = room.settings.imposterCount ?? 1;
   const twoImpostersUnlocked = room.players.length >= TWO_IMPOSTER_MIN_PLAYERS;
 
@@ -515,6 +516,38 @@ export function LobbyScreen({ room, playerId, isHost, actions, code, error }: Pr
                   {room.settings.isPublic ? 'SP (PUBLIC)' : 'EP (PRIVATE)'}
                 </span>
               )}
+            </div>
+
+            {/* §4: whether the ballot is live. Changeable between rounds like
+                everything else here — the server refuses it mid-round, which
+                stops a flip from retroactively publishing votes. */}
+            <div className="osd-menu-row">
+              <span>BALLOT:</span>
+              {isHost ? (
+                <button
+                  id="vote-visibility-toggle-btn"
+                  className="osd-menu-btn"
+                  onClick={() =>
+                    actions.updateSettings(code, {
+                      voteVisibility: anonymousBallot ? 'public' : 'anonymous',
+                    })
+                  }
+                >
+                  {anonymousBallot ? 'ANONYMOUS' : 'PUBLIC'}
+                </button>
+              ) : (
+                <span style={{ color: 'var(--neon-yellow)' }}>
+                  {anonymousBallot ? 'ANONYMOUS' : 'PUBLIC'}
+                </span>
+              )}
+            </div>
+            <div
+              className="osd-text"
+              style={{ fontSize: '0.7rem', color: '#aaa', padding: '0 4px 6px' }}
+            >
+              {anonymousBallot
+                ? 'NOBODY SEES A VOTE UNTIL THE FINAL TALLY.'
+                : 'EVERYONE WATCHES THE VOTES LAND LIVE.'}
             </div>
           </div>
         </div>

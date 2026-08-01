@@ -9,6 +9,17 @@ export type GamePhase = 'lobby' | 'playing' | 'words' | 'deliberation' | 'result
 
 export type ChatType = 'text' | 'voice' | 'video' | 'none';
 
+/**
+ * Host setting from spec §4, applied per vote round (§8).
+ *
+ *   public     everyone sees live who is voting for whom
+ *   anonymous  only the final tally is revealed, at results
+ *
+ * "Only the final tally" is literal: in anonymous lobbies individual ballots
+ * are never published, not even once the round is over.
+ */
+export type VoteVisibility = 'public' | 'anonymous';
+
 export interface PlayerPublic {
   id: string;
   name: string;
@@ -50,8 +61,14 @@ export interface RoomPublic {
     wordsPerPlayer: number;
     imposterCount: number;
     chatType: ChatType;
+    voteVisibility: VoteVisibility;
     videoCategory: string | null;
   };
+  /**
+   * Voter -> target. Empty in an anonymous lobby, where individual ballots
+   * are never published — check `settings.voteVisibility` before reading it
+   * rather than inferring "nobody has voted" from an empty object.
+   */
   votes: Record<string, string>;
   createdAt: number;
 }
@@ -65,7 +82,23 @@ export interface GameAssignment {
 }
 
 export interface VoteTally {
-  tally: Record<string, number>;  // socketId -> vote count
+  /**
+   * playerId -> vote count. **null in an anonymous lobby** — the running
+   * count is exactly what §4 says that setting withholds. The two progress
+   * numbers below still go out, because "3 of 5 have voted" says nothing
+   * about who anyone voted for and the phase is unreadable without it.
+   */
+  tally: Record<string, number> | null;
+  /**
+   * voter -> target, which is §4's "everyone sees live who's voting for
+   * whom". Null in an anonymous lobby.
+   *
+   * Lives here rather than on `RoomPublic.votes` because this is the payload
+   * a vote actually pushes — `room:updated` only fires on roster changes, so
+   * a screen driven off the room snapshot would show a ballot frozen at the
+   * moment deliberation opened.
+   */
+  ballots: Record<string, string> | null;
   votescast: number;
   totalVoters: number;
 }
@@ -158,7 +191,15 @@ export interface DeliberationState {
   voteRound: number;
   /** Non-null while a tie is being re-voted; ballot is restricted to these. */
   revoteCandidates: string[] | null;
+  /**
+   * Who must recast. **null in an anonymous lobby**: being on this list means
+   * you backed neither tied candidate, which is a fact about your ballot, so
+   * publishing the roster would leak exactly what anonymity protects. Use
+   * `canRecast` for your own eligibility — it is per-socket and always right.
+   */
   eligibleVoters: string[] | null;
+  /** Whether *this* player may recast. Null outside a re-vote. */
+  canRecast: boolean | null;
 }
 
 export interface Preset {

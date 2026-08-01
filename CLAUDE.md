@@ -68,6 +68,16 @@ Two consequences worth keeping in mind. `room.words` and `room.lastResults` exis
 
 The knock-on: a Custom lobby needs **5** people to field a 4-player game, and the start check counts non-spectators. The lobby says who is sitting out before anyone hits start rather than springing it when the tape rolls.
 
+**Voting visibility is a host setting, and enforcing it is three separate places (§4, §8).** `settings.voteVisibility` is `'public' | 'anonymous'`, defaults to public, and — like every other setting — is lobby-phase only, because flipping it mid-ballot would retroactively publish votes cast in confidence. Public means §4's "everyone sees live who's voting for whom", which the screen genuinely didn't do before. Anonymous withholds all of it until the final tally at results, and "only the final tally" is literal: individual ballots are never published, not even once the round is over. The three leaks, all closed via `isAnonymousVote()`:
+
+1. `sanitizeRoom().votes` — the voter→target map, blanked when anonymous.
+2. `vote:tally` — built by `tallyPayload()`; `tally` and `ballots` go null. The two progress numbers still go out, because "3 of 5 have voted" reveals nothing about targets and the phase is unreadable without it.
+3. `game:revote` — the subtle one. Being on `eligibleVoters` means you backed *neither* tied candidate, so the roster is itself a statement about your ballot. `announceRevote()` broadcasts room-wide when public, but emits **per socket** when anonymous, with `eligibleVoters: null` and a `canRecast` boolean that speaks only about the recipient. Client-side, prefer `canRecast` over `eligibleVoters.includes(me)`.
+
+`sendCatchUp()` repeats all three rules — a reconnect must not be a way around them.
+
+**The live ballot rides on `vote:tally`, not on `room.votes`.** Casting a vote does not emit `room:updated`, so a screen reading `room.votes` shows a ballot frozen at the moment deliberation opened. `VoteTally.ballots` is the live channel; `RoomPublic.votes` is only a snapshot.
+
 **Tie-breaking (section 8)** lives in `resolveVote()` / `beginRevote()` in `gameState.ts`. On a tie, voters who backed *neither* tied candidate are the swing voters: only their ballots are cleared, and they recast restricted to the tied pair. Voters already behind a tied candidate keep their vote. If there are no swing voters at all, the whole ballot re-runs among the tied players and loops until somebody switches — the round cannot conclude on a tie. `revoteCandidates` being non-null is what marks a restricted ballot.
 
 **One deadlock is unbreakable and must not loop.** When the only two players still in the game are the two tied candidates, neither can switch without voting for themselves, so every re-vote reproduces the same 1–1 and the room would re-arm its deliberation timer forever. `resolveVote()` ends that case with `accusedId: null` — no accusation, the group failed to agree. Larger deadlocks are still left to loop, because with three or more voters somebody can always move. Reachable whenever a lobby shrinks to two active players, which since reconnect landed includes two people simply losing signal.
@@ -117,11 +127,10 @@ Still outstanding:
 
 | Area | Spec (`docs/BUILD-PLAN.md`) | Code today | Phase |
 |---|---|---|---|
-| Voting visibility | Host picks Public or Anonymous (§4) | Always broadcasts a live tally | 3 |
 | Voice/video lobbies | Host can pick voice or video chat, with mic/cam toggles (§4, §5) | `ChatType` and `DeliberationScreen` handle both, but the host form only offers text on/off — correct for Phase 1, which §16 scopes to "text chat only (+ 'None')" | 2 |
 | Not built | Emoji reactions during video (§5), premium (§12), ads (§13), loot boxes (§10), profanity filter (§17), report/block (§17), friends (§11), matchmaking (§16) | — | 2–4 |
 
-Phase 3 is under way. **Reconnect** went first — not a spec item, but it blocked what is: currency was only worth persisting once identity survived a refresh. **Persistent currency (§9, §11) is done** too, along with the claim-your-account prompt §11 attaches to it. Voting visibility is the one Phase 3 row left.
+**Phase 3 is closed.** Delivered in order: reconnect (not a spec item, but it blocked the rest — currency is only worth persisting once identity survives a refresh), persistent account-bound currency (§9, §11) with the claim-your-account prompt §11 attaches to it, and Public/Anonymous voting visibility (§4, §8). What remains in the table above is Phase 2's voice/video host controls and the Phase 2–4 "not built" list.
 
 Two known holes left open on purpose, both pre-existing and neither about money: `Player.cosmetics` is validated for shape but **not for ownership**, so a doctored client can wear something it never bought (the wallet API does check, the socket join doesn't); and the `GameHistory` model still has no reader or writer.
 

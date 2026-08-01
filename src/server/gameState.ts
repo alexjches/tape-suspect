@@ -10,7 +10,7 @@
 //   deliberation ONE 90s window with chat and voting live simultaneously (8)
 //   results      roles revealed, coins awarded (9)
 
-import type { EquippedCosmetics, GameResults, GameWord } from '../types';
+import type { EquippedCosmetics, GameResults, GameWord, VoteVisibility } from '../types';
 
 export type PlayerStatus = 'connected' | 'disconnected';
 
@@ -58,6 +58,12 @@ export interface RoomSettings {
   // 'none' is for groups already talking on Discord/FaceTime — the app shows
   // no chat UI at all beyond turn indicators (section 4).
   chatType: 'text' | 'voice' | 'video' | 'none';
+  /**
+   * Public shows the live ballot to everyone; anonymous withholds it until
+   * the final tally at results (sections 4 and 8). Applies per vote round, so
+   * a 2-imposter game honours it twice.
+   */
+  voteVisibility: VoteVisibility;
   videoCategory: string | null;
 }
 
@@ -497,6 +503,11 @@ export function restorePlayer(
 /** Picks `count` imposters uniformly. They all share one video (section 3). */
 export function pickImposters(room: RoomState, count: number): string[] {
   return shuffle(activePlayers(room).map((p) => p.id)).slice(0, Math.max(1, count));
+}
+
+/** True when this lobby withholds the live ballot (sections 4, 8). */
+export function isAnonymousVote(room: RoomState): boolean {
+  return room.settings.voteVisibility === 'anonymous';
 }
 
 export const TURN_SECONDS = 10;

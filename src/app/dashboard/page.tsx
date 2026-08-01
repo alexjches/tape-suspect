@@ -8,7 +8,7 @@ import { useSession, signOut } from 'next-auth/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getSocket } from '@/lib/socket';
 import { getPlayerId } from '@/lib/playerId';
-import { RoomPublic, ChatType } from '@/types';
+import { RoomPublic, ChatType, VoteVisibility } from '@/types';
 import { VIDEO_CATEGORIES, CUSTOM_CATEGORY } from '@/lib/videoCategories';
 import { isValidVideoUrl } from '@/lib/videoParser';
 import { useShop } from '@/hooks/useShop';
@@ -55,6 +55,7 @@ function DashboardContent() {
   // Host setup form
   const [isPublic, setIsPublic] = useState(true);
   const [chatType, setChatType] = useState<ChatType>('text');
+  const [voteVisibility, setVoteVisibility] = useState<VoteVisibility>('public');
   const [category, setCategory] = useState<string>('memes');
   const [crewUrl, setCrewUrl] = useState('');
   const [imposterUrl, setImposterUrl] = useState('');
@@ -156,6 +157,7 @@ function DashboardContent() {
         cosmetics,
         isPublic,
         chatType,
+        voteVisibility,
         videoCategory: category,
         normalVideoUrl: category === CUSTOM_CATEGORY ? crewUrl : '',
         imposterVideoUrl: category === CUSTOM_CATEGORY ? imposterUrl : '',
@@ -168,7 +170,7 @@ function DashboardContent() {
         }
       }
     );
-  }, [customValid, playerName, playerAvatar, userId, cosmetics, isPublic, chatType, category, crewUrl, imposterUrl, router]);
+  }, [customValid, playerName, playerAvatar, userId, cosmetics, isPublic, chatType, voteVisibility, category, crewUrl, imposterUrl, router]);
 
   // Redirect logged-out non-guests
   if (status === 'unauthenticated' && !isGuest) {
@@ -499,6 +501,39 @@ function DashboardContent() {
                       {chatType === 'text'
                         ? 'Players argue in the app during the 90s window.'
                         : 'No in-app chat — for lobbies already on Discord or FaceTime.'}
+                    </p>
+                  </div>
+
+                  {/* Spec §4: the host picks whether the ballot is live. */}
+                  <div>
+                    <label className="form-section-title">🗳️ VOTING VISIBILITY</label>
+                    <div style={{ display: 'flex', gap: 10, marginTop: 5 }}>
+                      <button
+                        id="opt-vote-public"
+                        className={`btn-brutal option-btn flex-1${
+                          voteVisibility === 'public' ? ' active' : ''
+                        }`}
+                        onClick={() => setVoteVisibility('public')}
+                      >
+                        👁 PUBLIC
+                      </button>
+                      <button
+                        id="opt-vote-anonymous"
+                        className={`btn-brutal option-btn flex-1${
+                          voteVisibility === 'anonymous' ? ' active' : ''
+                        }`}
+                        onClick={() => setVoteVisibility('anonymous')}
+                      >
+                        🕶 ANONYMOUS
+                      </button>
+                    </div>
+                    <p
+                      className="osd-text"
+                      style={{ fontSize: '0.75rem', color: '#888', marginTop: 6 }}
+                    >
+                      {voteVisibility === 'public'
+                        ? 'Everyone watches the votes land as they are cast.'
+                        : 'Nobody sees a vote until the final tally at the reveal.'}
                     </p>
                   </div>
 

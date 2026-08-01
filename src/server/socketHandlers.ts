@@ -25,6 +25,7 @@ import {
   allReadyToAdvance,
   activePlayers,
   connectedPlayers,
+  isAnonymousVote,
   totalGameRounds,
   beginNextGameRound,
   pickImposters,
@@ -42,6 +43,7 @@ import {
   transferHost,
   DELIBERATION_SECONDS,
   HostTransferRejection,
+  VoteOutcome,
   Player,
   RoomSettings,
   RoomState,
@@ -137,9 +139,13 @@ function sanitizeRoom(room: RoomState) {
       wordsPerPlayer: room.settings.wordsPerPlayer,
       imposterCount: room.settings.imposterCount,
       chatType: room.settings.chatType,
+      voteVisibility: room.settings.voteVisibility,
       videoCategory: room.settings.videoCategory,
     },
-    votes: room.votes,
+    // Individual ballots. An anonymous lobby never publishes them — not
+    // during the vote and not after it, since §4 promises only the final
+    // tally is revealed, and this object is who-voted-for-whom.
+    votes: isAnonymousVote(room) ? {} : room.votes,
     createdAt: room.createdAt,
   };
 }
@@ -331,14 +337,7 @@ function concludeVote(room: RoomState, io: Server) {
 
   if (outcome.kind === 'revote') {
     beginRevote(room, outcome);
-    io.to(room.code).emit('game:revote', {
-      candidates: outcome.candidates,
-      eligibleVoters: outcome.eligibleVoters,
-      voteRound: room.voteRound,
-      endsAt: room.deliberationEndsAt,
-      durationSeconds: DELIBERATION_SECONDS,
-      tally: getVoteTally(room),
-    });
+    announceRevote(room, io, outcome);
     startDeliberationTimer(room, io);
     console.log(
       `[Vote] Tie in ${room.code} between ${outcome.candidates.join(', ')} — re-vote round ${room.voteRound}`
@@ -374,14 +373,72 @@ function concludeVote(room: RoomState, io: Server) {
   finalizeResults(room, io, [...room.accusedIds, ...accused]);
 }
 
-function broadcastTally(room: RoomState, io: Server) {
-  io.to(room.code).emit('vote:tally', {
-    tally: getVoteTally(room),
+/**
+ * The live vote state, as much of it as this lobby is allowed to see.
+ *
+ * Anonymous withholds the running count itself (§4) — the two progress
+ * numbers still go out, because "3 of 5 have voted" reveals nothing about who
+ * anyone picked and the phase is unreadable without a sense of how close it
+ * is to closing.
+ */
+function tallyPayload(room: RoomState) {
+  const anonymous = isAnonymousVote(room);
+  return {
+    tally: anonymous ? null : getVoteTally(room),
+    // §4's "who's voting for whom", on the channel a vote actually pushes.
+    ballots: anonymous ? null : { ...room.votes },
     votescast: Object.keys(room.votes).length,
     // An accused player is out of the ballot, so they don't count toward the
     // "everyone has voted" total either (section 3).
     totalVoters: activePlayers(room).length,
-  });
+  };
+}
+
+function broadcastTally(room: RoomState, io: Server) {
+  io.to(room.code).emit('vote:tally', tallyPayload(room));
+}
+
+/**
+ * Announces a tie re-vote (section 8), honouring the visibility setting.
+ *
+ * Public broadcasts the whole thing. Anonymous cannot: being on
+ * `eligibleVoters` means you backed *neither* tied candidate, which is a fact
+ * about your ballot — publishing the roster would leak precisely what the
+ * setting protects. So each player is told only whether they themselves may
+ * recast, one emit per socket.
+ */
+function announceRevote(
+  room: RoomState,
+  io: Server,
+  outcome: Extract<VoteOutcome, { kind: 'revote' }>
+) {
+  const base = {
+    candidates: outcome.candidates,
+    voteRound: room.voteRound,
+    endsAt: room.deliberationEndsAt,
+    durationSeconds: DELIBERATION_SECONDS,
+  };
+
+  if (!isAnonymousVote(room)) {
+    io.to(room.code).emit('game:revote', {
+      ...base,
+      eligibleVoters: outcome.eligibleVoters,
+      canRecast: null,
+      tally: getVoteTally(room),
+    });
+    return;
+  }
+
+  const recasting = new Set(outcome.eligibleVoters);
+  for (const player of room.players) {
+    if (!player.socketId) continue;
+    io.to(player.socketId).emit('game:revote', {
+      ...base,
+      eligibleVoters: null,
+      canRecast: recasting.has(player.id),
+      tally: null,
+    });
+  }
 }
 
 // ─── Reconnect: losing a player, and getting them back ───────────────────────
@@ -485,21 +542,22 @@ function sendCatchUp(room: RoomState, playerId: string, socket: Socket, io: Serv
     });
     if (room.revoteCandidates) {
       // Restricted ballot: who may still recast is exactly who has no vote
-      // on record, since beginRevote cleared only those (section 8).
+      // on record, since beginRevote cleared only those (section 8). Same
+      // visibility rule as the live announcement — an anonymous lobby is told
+      // only about itself.
+      const stillToRecast = pendingVoters(room);
+      const anonymous = isAnonymousVote(room);
       socket.emit('game:revote', {
         candidates: room.revoteCandidates,
-        eligibleVoters: pendingVoters(room),
+        eligibleVoters: anonymous ? null : stillToRecast,
+        canRecast: anonymous ? stillToRecast.includes(playerId) : null,
         voteRound: room.voteRound,
         endsAt: room.deliberationEndsAt,
         durationSeconds: DELIBERATION_SECONDS,
-        tally: getVoteTally(room),
+        tally: anonymous ? null : getVoteTally(room),
       });
     }
-    socket.emit('vote:tally', {
-      tally: getVoteTally(room),
-      votescast: Object.keys(room.votes).length,
-      totalVoters: activePlayers(room).length,
-    });
+    socket.emit('vote:tally', tallyPayload(room));
   }
 
   if (room.phase === 'results' && room.lastResults) {
@@ -543,6 +601,7 @@ export function registerSocketHandlers(io: Server) {
           wordsPerPlayer?: number;
           maxPlayers?: number;
           chatType?: RoomSettings['chatType'];
+          voteVisibility?: RoomSettings['voteVisibility'];
           videoCategory?: string | null;
         },
         callback: (res: { success: boolean; code?: string; error?: string }) => void
@@ -576,6 +635,9 @@ export function registerSocketHandlers(io: Server) {
           // the lobby OSD once enough people have joined.
           imposterCount: 1,
           chatType: data.chatType ?? 'text',
+          // Public by default — the live ballot is the livelier game, and a
+          // host who wants the quieter one picks it deliberately (§4).
+          voteVisibility: data.voteVisibility === 'anonymous' ? 'anonymous' : 'public',
           // An unrecognised genre falls back to null, which means "host supplies
           // the URLs" — never a silent pick from some other shelf.
           videoCategory: isKnownCategory(data.videoCategory) ? data.videoCategory! : null,
@@ -719,6 +781,7 @@ export function registerSocketHandlers(io: Server) {
         maxPlayers?: number;
         imposterCount?: number;
         chatType?: RoomSettings['chatType'];
+        voteVisibility?: RoomSettings['voteVisibility'];
         videoCategory?: string | null;
       }) => {
         const room = getRoom(data.code);
@@ -752,6 +815,12 @@ export function registerSocketHandlers(io: Server) {
           }
         }
         if (data.chatType !== undefined) room.settings.chatType = data.chatType;
+        if (data.voteVisibility !== undefined) {
+          // Lobby-phase only, like every other setting here — flipping it
+          // mid-ballot would retroactively publish votes cast in confidence.
+          room.settings.voteVisibility =
+            data.voteVisibility === 'anonymous' ? 'anonymous' : 'public';
+        }
         if (data.videoCategory !== undefined) {
           const next = isKnownCategory(data.videoCategory) ? data.videoCategory! : null;
           if (next !== room.settings.videoCategory) {

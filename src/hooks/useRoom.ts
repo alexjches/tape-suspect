@@ -21,6 +21,7 @@ import {
   TurnState,
   DeliberationState,
   ChatType,
+  VoteVisibility,
   EquippedCosmetics,
 } from '@/types';
 
@@ -130,6 +131,7 @@ export function useRoom(code: string | null) {
           voteRound: data.voteRound,
           revoteCandidates: data.revoteCandidates,
           eligibleVoters: null,
+          canRecast: null,
         },
       }));
     };
@@ -138,13 +140,16 @@ export function useRoom(code: string | null) {
       setState((prev) => ({ ...prev, secondsLeft: data.secondsLeft }));
     };
 
+    // In an anonymous lobby this arrives per-socket rather than room-wide,
+    // with `eligibleVoters` withheld and `canRecast` speaking only about you.
     const handleRevote = (data: {
       candidates: string[];
-      eligibleVoters: string[];
+      eligibleVoters: string[] | null;
+      canRecast: boolean | null;
       voteRound: number;
       endsAt: number;
       durationSeconds: number;
-      tally: Record<string, number>;
+      tally: Record<string, number> | null;
     }) => {
       setState((prev) => ({
         ...prev,
@@ -155,6 +160,7 @@ export function useRoom(code: string | null) {
           voteRound: data.voteRound,
           revoteCandidates: data.candidates,
           eligibleVoters: data.eligibleVoters,
+          canRecast: data.canRecast,
         },
       }));
     };
@@ -265,6 +271,7 @@ export function useRoom(code: string | null) {
         normalVideoUrl?: string;
         imposterVideoUrl?: string;
         chatType?: ChatType;
+        voteVisibility?: VoteVisibility;
         videoCategory?: string | null;
       }) => {
         return new Promise<string>((resolve, reject) => {
@@ -292,6 +299,7 @@ export function useRoom(code: string | null) {
           maxPlayers?: number;
           imposterCount?: number;
           chatType?: ChatType;
+          voteVisibility?: VoteVisibility;
           videoCategory?: string | null;
         }
       ) => {
