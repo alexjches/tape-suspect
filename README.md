@@ -17,7 +17,7 @@ Inspired by Sidemen Reacts: Imposter.
 | Frontend | Next.js 14 (App Router), React 18, TypeScript |
 | Styling | VHS/CRT design system (`src/app/vhs.css`); Tailwind for layout utilities only |
 | Real-time | Socket.io on a custom Node HTTP server (`server.js`, run through `tsx`) |
-| Auth | NextAuth.js — email/password (bcrypt) + Google/Discord OAuth |
+| Auth | NextAuth.js — email/password (bcrypt) + Google/Apple OAuth |
 | Database | Prisma + SQLite (dev) / PostgreSQL (prod) — durable data only |
 
 ---
@@ -65,9 +65,9 @@ Copy `.env.example` to `.env`. `.env` and `.env.local` are gitignored.
 | `NEXTAUTH_URL` | ✅ | App base URL |
 | `DATABASE_URL` | ✅ | SQLite: `file:./dev.db`, or a Postgres URL |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional | Enables Google sign-in |
-| `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` | Optional | Enables Discord sign-in |
+| `APPLE_CLIENT_ID` / `APPLE_CLIENT_SECRET` | Optional | Enables Apple sign-in. The secret is a signed ES256 JWT that expires within 6 months, not a static string |
 
-OAuth providers are spliced in only when their env vars are present, so the app runs fine with email/password alone.
+OAuth providers are spliced in only when their env vars are present, so the app runs fine with email/password alone — and `/login` asks NextAuth which ones are live rather than hardcoding the buttons, so an unconfigured provider simply doesn't render.
 
 ### Switching to PostgreSQL
 

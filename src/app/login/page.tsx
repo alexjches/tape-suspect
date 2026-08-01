@@ -2,11 +2,20 @@
 // src/app/login/page.tsx
 // Access console styled on the identity modal in vhs-frontend-example/home.html.
 
-import { useState } from 'react';
-import { signIn } from 'next-auth/react';
+import { useEffect, useState } from 'react';
+import { signIn, getProviders } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { CrtShell } from '@/components/vhs/CrtShell';
+
+// Spec §11: email, Google and Apple. Both OAuth providers are spliced into
+// authOptions only when their env vars exist, so the buttons are driven off
+// what the server actually has rather than hardcoded — an unconfigured
+// provider would otherwise render a button that only produces an error page.
+const OAUTH_BUTTONS = [
+  { id: 'google', label: 'CONTINUE WITH GOOGLE', className: 'btn-brutal cyan' },
+  { id: 'apple', label: 'CONTINUE WITH APPLE', className: 'btn-brutal dark' },
+];
 
 export default function LoginPage() {
   const router = useRouter();
@@ -14,6 +23,15 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [enabledOauth, setEnabledOauth] = useState<string[]>([]);
+
+  useEffect(() => {
+    getProviders().then((providers) => {
+      setEnabledOauth(Object.keys(providers ?? {}));
+    });
+  }, []);
+
+  const oauthButtons = OAUTH_BUTTONS.filter((p) => enabledOauth.includes(p.id));
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -81,31 +99,30 @@ export default function LoginPage() {
             </div>
           </form>
 
-          <div
-            className="osd-text"
-            style={{ textAlign: 'center', color: 'var(--ink-soft)', margin: '14px 0 10px' }}
-          >
-            ─── OR ───
-          </div>
+          {oauthButtons.length > 0 && (
+            <>
+              <div
+                className="osd-text"
+                style={{ textAlign: 'center', color: 'var(--ink-soft)', margin: '14px 0 10px' }}
+              >
+                ─── OR ───
+              </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <button
-              id="login-google-btn"
-              type="button"
-              className="btn-brutal cyan"
-              onClick={() => signIn('google', { callbackUrl: '/dashboard' })}
-            >
-              CONTINUE WITH GOOGLE
-            </button>
-            <button
-              id="login-discord-btn"
-              type="button"
-              className="btn-brutal magenta"
-              onClick={() => signIn('discord', { callbackUrl: '/dashboard' })}
-            >
-              CONTINUE WITH DISCORD
-            </button>
-          </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {oauthButtons.map((p) => (
+                  <button
+                    key={p.id}
+                    id={`login-${p.id}-btn`}
+                    type="button"
+                    className={p.className}
+                    onClick={() => signIn(p.id, { callbackUrl: '/dashboard' })}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
 
           <p className="osd-text" style={{ textAlign: 'center', color: 'var(--ink-soft)', marginTop: 16 }}>
             NO ACCOUNT?{' '}

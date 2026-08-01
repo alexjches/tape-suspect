@@ -68,7 +68,7 @@ Roles are covered by the same rule: `game:assigned` carries **only** `videoUrl`.
 
 **Coins/shop are client-side only, and cosmetics are inert.** `src/hooks/useShop.ts` reads/writes `localStorage` (`imposter_coins`, `imposter_shop_owned`, `imposter_shop_equipped`). The server computes a `coinReward` in `game:results` but nothing persists it, so clearing site data wipes the wallet. `/shop` sells the three cosmetic slots from the prototype — tape skins, VCR skins, tape labels (`SHOP_ITEMS`) — and equipping writes to localStorage, but **nothing reads `equipped` outside the shop**: a bought skin does not yet repaint the lobby consoles or the results cassette. Wiring that up belongs with the Phase 3 currency move. Guest identity is likewise localStorage (`imposter_guest_name`, `imposter_guest_avatar`).
 
-**Auth** — NextAuth, JWT sessions, credentials (bcrypt) plus Google/Discord providers conditionally spliced in only when their env vars exist. The `jwt`/`session` callbacks thread the DB user id onto `session.user.id`, passed as the optional `userId` on `room:create`/`room:join`.
+**Auth** — NextAuth, JWT sessions, credentials (bcrypt) plus Google/Apple providers conditionally spliced in only when their env vars exist — §11 lists Discord as a later addition, not a launch provider. `/login` calls `getProviders()` and renders a button only for what is actually live, so an unconfigured provider is invisible rather than broken. `APPLE_CLIENT_SECRET` is a signed ES256 JWT that expires within 6 months, not a static string. The `jwt`/`session` callbacks thread the DB user id onto `session.user.id`, passed as the optional `userId` on `room:create`/`room:join`.
 
 ## Where the code contradicts the spec
 
@@ -88,7 +88,6 @@ Still outstanding:
 | 2-imposter flow | Two word+vote rounds, accused removed between them (§3) | Not implemented; `imposterCount` pinned to 1 | 2 |
 | Voting visibility | Host picks Public or Anonymous (§4) | Always broadcasts a live tally | 3 |
 | Currency | Persistent, account-bound (§9, §11) | localStorage only (`useShop.ts`) | 3 |
-| Accounts | Email / Google / **Apple**; Discord later (§11) | Email / Google / **Discord**; no Apple | 2 |
 | Reconnect | — | Identity is `socket.id`, so a refresh makes a new player and drops you from the round | — |
 | Cosmetics | Bought skins change how you look in game (§10) | Shop UI + ownership work; `equipped` is never read outside `/shop` | 3 |
 | Voice/video lobbies | Host can pick voice or video chat, with mic/cam toggles (§4, §5) | `ChatType` and `DeliberationScreen` handle both, but the host form only offers text on/off — correct for Phase 1, which §16 scopes to "text chat only (+ 'None')" | 2 |
