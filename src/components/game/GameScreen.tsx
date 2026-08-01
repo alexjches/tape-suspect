@@ -4,6 +4,14 @@
 //
 // The player is never told their role, so this screen looks identical for
 // crew and imposter — that is the point (section 3).
+//
+// The load-in mirrors startWatchSequence() in vhs-frontend-example/app.js:
+// the gate drops, a cassette slides up into it, then the overlay clears and
+// the picture powers on with the CRT `vhs-power-on` bloom. The prototype runs
+// that off a fixed 1.8s timeline because it has nobody to wait for; here the
+// beats hang off the real sync instead — the tape "reads" while other decks
+// buffer, and the picture only powers on at the wall-clock moment the server
+// picked. See docs/BUILD-PLAN.md §5.
 
 import { useRef, useEffect, useState, useCallback } from 'react';
 import type { GameAssignment, ReadyState } from '@/types';
@@ -36,6 +44,24 @@ export function GameScreen({
   const [hasSignaledLoaded, setHasSignaledLoaded] = useState(false);
   const [clickedReady, setClickedReady] = useState(false);
   const [graceLeft, setGraceLeft] = useState<number | null>(null);
+  /** Drives the cassette up into the gate; set one tick after mount so the
+      CSS transition has a from-state to animate out of. */
+  const [inserting, setInserting] = useState(false);
+  /** Overlay clears and the picture powers on. */
+  const [poweredOn, setPoweredOn] = useState(false);
+  /** Kept mounted through the 0.3s fade-out so the overlay doesn't snap away. */
+  const [showInsertion, setShowInsertion] = useState(true);
+
+  useEffect(() => {
+    const id = setTimeout(() => setInserting(true), 50);
+    return () => clearTimeout(id);
+  }, []);
+
+  useEffect(() => {
+    if (!poweredOn) return;
+    const id = setTimeout(() => setShowInsertion(false), 600);
+    return () => clearTimeout(id);
+  }, [poweredOn]);
 
   const handleVideoReady = useCallback(() => {
     if (hasSignaledLoaded) return;
@@ -64,6 +90,10 @@ export function GameScreen({
       setTimeout(() => {
         playerRef.current?.play();
         setPlayState('playing');
+        // Overlay fades and the CRT blooms in at the same instant the tape
+        // rolls, so the picture arrives through the power-on rather than
+        // being revealed already running.
+        setPoweredOn(true);
       }, delay);
     };
 
@@ -100,37 +130,56 @@ export function GameScreen({
     actions.readyToAdvance(code);
   }, [clickedReady, code, actions]);
 
+  // One line, as in the prototype — see the .insertion-status note in
+  // globals.css for why a second line breaks the cassette's landing.
+  const insertionStatus =
+    playState === 'loading'
+      ? 'TAPE INJECTING…'
+      : playState === 'countdown'
+      ? `PLAYBACK IN ${Math.max(countdown, 1)}…`
+      : `TAPE LOADED… READING…${
+          loadedCount ? ` ${loadedCount.ready}/${loadedCount.total} DECKS` : ''
+        }`;
+
   return (
     <div className="fixed inset-0 bg-black flex flex-col overflow-hidden">
-      <div className="absolute inset-0">
-        <VideoPlayer
-          ref={playerRef}
-          url={assignment.videoUrl}
-          onReady={handleVideoReady}
-          onEnded={handleVideoEnded}
-        />
+      <div className={`video-screen${poweredOn ? ' vhs-starting' : ''}`}>
+        <div className="absolute inset-0">
+          <VideoPlayer
+            ref={playerRef}
+            url={assignment.videoUrl}
+            onReady={handleVideoReady}
+            onEnded={handleVideoEnded}
+          />
+        </div>
       </div>
 
-      {/* Loading / waiting for everyone to buffer */}
-      {(playState === 'loading' || playState === 'waiting') && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
-          <div className="text-center">
-            <div className="osd-text" style={{ color: 'var(--neon-cyan)', fontSize: '1.2rem' }}>
-              {playState === 'loading' ? 'TAPE INJECTING…' : 'WAITING FOR ALL DECKS…'}
-            </div>
-            {loadedCount && (
-              <div className="osd-text" style={{ color: '#aaa', marginTop: 8 }}>
-                {loadedCount.ready}/{loadedCount.total} READY
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Head-drift bar. CrtShell owns this everywhere else, but the watch
+          phase deliberately renders outside the CRT frame. */}
+      <div className={`tracking-line${poweredOn ? ' vhs-starting-tracking' : ''}`} />
 
-      {playState === 'countdown' && countdown > 0 && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-20">
-          <div className="brutal-title" style={{ fontSize: '8rem', color: 'var(--neon-yellow)' }}>
-            {countdown}
+      {/* Tape insertion — covers load, the wait for other decks, and the
+          countdown, then clears as the picture powers on. */}
+      {showInsertion && (
+        <div
+          className={`vcr-insertion-overlay${inserting ? ' inserting' : ''}${
+            poweredOn ? ' fade-out' : ''
+          }`}
+        >
+          <div className="insertion-container">
+            <div className="vcr-gate">
+              <div className="vcr-gate-door">INSERT TAPE</div>
+            </div>
+            <div className="inserting-tape">
+              <div className="compact-tape">
+                <div className="compact-label">📼 {code}</div>
+                <div className="compact-spools">
+                  <div className="c-spool" />
+                  <div className="c-spool" />
+                </div>
+              </div>
+            </div>
+            <div className="insertion-status osd-text">{insertionStatus}</div>
           </div>
         </div>
       )}

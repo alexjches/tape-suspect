@@ -87,9 +87,19 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
         if (destroyed || !containerRef.current) return;
 
         const div = document.createElement('div');
+        // The API keeps this id on the iframe it swaps in, which is what
+        // hands the frame over to vhs.css's #yt-player rule — width/height
+        // 100% plus the scale(1.15) that crops YouTube's title bar and
+        // control strip out of frame (spec §5 lock-down).
+        div.id = 'yt-player';
         containerRef.current.appendChild(div);
 
         ytPlayerRef.current = new window.YT.Player(div, {
+          // The API replaces `div` with an iframe of its own making, so the
+          // container's sizing classes don't carry over — without these it
+          // renders at the default 640x360 in the corner of the screen.
+          width: '100%',
+          height: '100%',
           videoId: parsed.id,
           playerVars: {
             autoplay: 0,
@@ -127,6 +137,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(
       return (
         <div
           ref={containerRef}
+          id="yt-player-container"
           className="w-full h-full"
           style={{ pointerEvents: 'none' }}
         />

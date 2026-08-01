@@ -214,3 +214,33 @@ footer {
   0% { transform: translateY(-20px) rotate(0deg); opacity: 1; }
   100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
 }
+
+/* The tape-insertion caption. `.inserting-tape` is absolutely positioned
+   against `.insertion-container`, but in vhs.css the caption is a flex child
+   of it — so the cassette lands straight through the middle of the caption
+   text, and growing the margin barely helps because the flex column just
+   recenters and takes half of it back. The prototype at :9000 collides the
+   same way; only the clearance is ours, the motion and styling are its.
+
+   Taking the caption out of the flow fixes it in both directions: the gate is
+   left alone to centre on the container, which is where the cassette's
+   landing position was authored against, and the caption sits at a fixed
+   offset that no amount of text can shift. */
+.insertion-status {
+  position: absolute;
+  top: 215px;
+  left: 0;
+  right: 0;
+  margin-top: 0;
+  text-align: center;
+}
+
+/* The results eject has the same shape of problem as the insertion caption
+   above: `.ejected-tape` travels -65px out of a 36px slot while the cassette
+   itself is ~95px tall, so it clears the deck entirely and lands on the
+   subtitle above it. The prototype at :9000 collides identically. Give the
+   deck the headroom the travel needs rather than shortening the throw — the
+   cassette flying clear of the machine is the animation. */
+.results-container .vcr-deck {
+  margin-top: 76px;
+}
