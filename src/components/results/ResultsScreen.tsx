@@ -35,7 +35,9 @@ function tapeLabel(url: string): string {
 
 export function ResultsScreen({ results, playerId, actions, code }: Props) {
   const router = useRouter();
-  const { addCoins } = useShop();
+  // `persistent` is false for guests, whose coins live in localStorage and go
+  // away with it — §11 wants them told exactly here, once a round has ended.
+  const { addCoins, persistent } = useShop();
   const [ejected, setEjected] = useState(false);
   const [showWinner, setShowWinner] = useState(false);
   const [showCoins, setShowCoins] = useState(false);
@@ -90,7 +92,9 @@ export function ResultsScreen({ results, playerId, actions, code }: Props) {
     };
   }, [crewWins]);
 
-  // Award coins once, counting up as they land.
+  // Bank the reward once, counting up as it lands. For a signed-in player the
+  // socket server has already credited the account — addCoins just pulls the
+  // authoritative balance back, so the count-up here is presentation only.
   useEffect(() => {
     if (!showCoins || coinsAdded.current || !myCoinReward) return;
     coinsAdded.current = true;
@@ -283,6 +287,31 @@ export function ResultsScreen({ results, playerId, actions, code }: Props) {
                 <span style={{ color: 'var(--neon-yellow)' }}>+{myCoinReward.total}</span>
               </div>
             </div>
+
+            {/* §11: the claim-your-account prompt, shown to guests after every
+                round. Their balance is real but lives in this browser only —
+                signing up folds exactly what they have into the account. */}
+            {!persistent && (
+              <div
+                className="osd-menu"
+                style={{ marginTop: 14, borderColor: 'var(--neon-yellow)' }}
+              >
+                <div className="osd-menu-title">--- Unsaved Progress ---</div>
+                <p className="osd-text" style={{ color: '#ddd', padding: '6px 2px' }}>
+                  You are playing as a guest, so these coins are held in this
+                  browser and nowhere else. Clear your site data and they are
+                  gone.
+                </p>
+                <button
+                  id="claim-account-btn"
+                  className="btn-brutal cyan"
+                  style={{ width: '100%', marginTop: 6 }}
+                  onClick={() => router.push('/signup')}
+                >
+                  💾 SAVE MY PROGRESS
+                </button>
+              </div>
+            )}
           </div>
         )}
 

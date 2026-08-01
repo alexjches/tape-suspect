@@ -49,7 +49,9 @@ import {
 import { CUSTOM_CATEGORY, isKnownCategory } from '../lib/videoCategories';
 import { sanitizeCosmetics } from '../lib/cosmetics';
 import { pickVideoPair, watchUrl } from './videoLibrary';
-import type { GameResults, GameWord } from '../types';
+import { verifySocketUser } from './socketAuth';
+import { awardCoins } from './wallet';
+import type { CoinReward, GameResults, GameWord } from '../types';
 
 // ── Phase 1 rule constants (docs/BUILD-PLAN.md) ──────────────────────
 // Lobby size 4–10 (section 20). Phase 1 ships a single imposter only
@@ -511,6 +513,19 @@ export function registerSocketHandlers(io: Server) {
   io.on('connection', (socket: Socket) => {
     console.log(`[Socket] Connected: ${socket.id}`);
 
+    // Resolve the signed-in account from the handshake cookie, not from
+    // anything the client says. This is what round rewards are credited to,
+    // so it has to be verified — see socketAuth.ts. Async, but create/join
+    // are user-initiated and land long after the handshake; the fallback if
+    // one somehow beats it is guest, which pays into no wallet at all.
+    verifySocketUser(socket)
+      .then((userId) => {
+        socket.data.userId = userId;
+      })
+      .catch(() => {
+        socket.data.userId = null;
+      });
+
     // ─── Room: Create ───────────────────────────────────────────────
     socket.on(
       'room:create',
@@ -518,6 +533,7 @@ export function registerSocketHandlers(io: Server) {
         data: {
           playerName: string;
           avatar: string;
+          /** Ignored — the account comes from the session cookie, see below. */
           userId: string | null;
           playerId?: string;
           cosmetics?: unknown;
@@ -537,7 +553,9 @@ export function registerSocketHandlers(io: Server) {
         const host: Player = {
           id: playerId,
           socketId: socket.id,
-          userId: data.userId,
+          // Verified from the session cookie, never from data.userId — this
+          // is what the round's coins get credited to.
+          userId: (socket.data.userId as string | null) ?? null,
           name: data.playerName,
           avatar: data.avatar,
           cosmetics: sanitizeCosmetics(data.cosmetics),
@@ -591,6 +609,7 @@ export function registerSocketHandlers(io: Server) {
           code: string;
           playerName: string;
           avatar: string;
+          /** Ignored — the account comes from the session cookie (socketAuth). */
           userId: string | null;
           playerId?: string;
           cosmetics?: unknown;
@@ -616,6 +635,9 @@ export function registerSocketHandlers(io: Server) {
         if (known) {
           const staleSocket = known.socketId;
           reattachPlayer(room, playerId, socket.id);
+          // They may have signed in (or out) since the drop — the wallet the
+          // round pays into follows the current cookie, not the old one.
+          known.userId = (socket.data.userId as string | null) ?? null;
           cancelDrop(data.code, playerId);
           socket.join(data.code);
           if (staleSocket && staleSocket !== socket.id) {
@@ -659,7 +681,7 @@ export function registerSocketHandlers(io: Server) {
         const player: Player = {
           id: playerId,
           socketId: socket.id,
-          userId: data.userId,
+          userId: (socket.data.userId as string | null) ?? null,
           name: data.playerName,
           avatar: data.avatar,
           cosmetics: sanitizeCosmetics(data.cosmetics),
@@ -1241,10 +1263,34 @@ function finalizeResults(room: RoomState, io: Server, accusedIds: string[]) {
   // round is over, so there is nothing left to leak.
   room.lastResults = payload;
   io.to(room.code).emit('game:results', payload);
+  bankRewards(room, payload);
 
   console.log(
     `[Game] Results in ${room.code}: ${outcome} (${impostersCaught}/${imposterCount} caught)`
   );
+}
+
+/**
+ * Banks each signed-in player's reward (spec §9, §11).
+ *
+ * Fire-and-forget on purpose: the reveal has already gone out, and a database
+ * hiccup must not hold up or partially fail the broadcast that every client is
+ * waiting on. A player either has a verified account behind their socket or
+ * they are a guest, in which case there is nothing to bank — their coins live
+ * in localStorage and die with it, which is what §11's claim prompt is for.
+ *
+ * `userId` here came from the session cookie (see socketAuth.ts), not from
+ * anything the client sent, or this would be a coin printer.
+ */
+function bankRewards(room: RoomState, payload: GameResults) {
+  const rewardOf = new Map<string, CoinReward>(
+    payload.players.map((p) => [p.id, p.coinReward])
+  );
+  for (const player of room.players) {
+    if (!player.userId) continue;
+    const total = rewardOf.get(player.id)?.total ?? 0;
+    if (total > 0) void awardCoins(player.userId, total);
+  }
 }
 
 /**

@@ -17,7 +17,7 @@ When a request is ambiguous, the spec decides. When the spec and the code disagr
 
 ```bash
 npm install
-npx prisma generate && npx prisma db push   # required before first run (creates prisma/dev.db)
+npx prisma generate && npx prisma db push   # required before first run, and after any schema change
 npm run dev                                 # tsx server.js — Next.js + Socket.io on :3000
 npm run build                               # next build
 npm run lint                                # next lint
@@ -89,7 +89,13 @@ The knock-on: a Custom lobby needs **5** people to field a 4-player game, and th
 
 Both needed a clearance fix, and **the prototype has the same collision** — verified against it running on :9000, so don't "restore" these to match it. In each case an absolutely-positioned cassette lands on text that was laid out without it: the insertion caption gets `position: absolute` (growing its margin barely helps, since the flex column recentres and takes half of it back), and the results deck gets top margin so the eject's throw has somewhere to go. Both overrides live in the App additions block in `globals.css` with the reasoning inline.
 
-**Coins are still client-side; cosmetics now render in game.** `src/hooks/useShop.ts` reads/writes `localStorage` (`imposter_coins`, `imposter_shop_owned`, `imposter_shop_equipped`). The server computes a `coinReward` in `game:results` but nothing persists it, so clearing site data wipes the wallet — the Phase 3 currency move is still outstanding. Guest identity is likewise localStorage (`imposter_guest_name`, `imposter_guest_avatar`).
+**The wallet has two backings, and only one of them is trustworthy.** `src/hooks/useShop.ts` presents one API over both: signed-in players go through `/api/wallet/*` to `User.coins` / `CosmeticOwnership` / `User.equipped`, guests stay on `localStorage` (`imposter_coins`, `imposter_shop_owned`, `imposter_shop_equipped`) exactly as before. `persistent` on the hook is which one you're on. Guest identity is likewise localStorage (`imposter_guest_name`, `imposter_guest_avatar`).
+
+`src/server/wallet.ts` is the **only** thing allowed to change a balance, and it is server-only — importing it from a component drags Prisma into the browser bundle. Prices come from `src/lib/cosmetics.ts`, never from a request; purchases run in one transaction with the `(userId, itemId)` unique constraint blocking double-owns and a post-decrement check blocking an overdraw across two different items. Every `/api/wallet/*` route re-derives the user from the session, so no request body ever names whose wallet to touch. `buy()` is async now.
+
+**`userId` on `room:create`/`room:join` is ignored.** It is client-supplied, so it was a claim, not a fact — harmless while it only labelled a player, a coin printer now that `finalizeResults` credits real money against it. `src/server/socketAuth.ts` decodes the NextAuth session cookie off the socket.io handshake instead, and `socket.data.userId` is what `Player.userId` gets. It is refreshed on reattach, since someone may have signed in between the drop and the return. `bankRewards()` is deliberately fire-and-forget behind the results broadcast: a database hiccup must not hold up or half-fail the reveal every client is waiting on.
+
+**Guests keep a real wallet that really does evaporate**, which is what §11's claim-your-account prompt is about — it now renders on the results screen after every round, and on the shop. Signing in folds the guest wallet into the account once via `/api/wallet/claim`. That payload is unverifiable by construction, so two things guard it: `User.claimedGuestAt` makes the claim single-use per account, and `MAX_CLAIMABLE_COINS` caps what a hand-edited localStorage can be worth. Coins are added and ownership merged, never overwritten, so claiming can't wipe a balance the account already had.
 
 **The cosmetic catalogue lives in `src/lib/cosmetics.ts`, not in the hook.** It has to be importable by the socket server — which validates incoming ids — and a server that has to import a React hook to check a string is the wrong shape. `useShop` re-exports `SHOP_ITEMS`/`COSMETIC_CATEGORIES` so existing callers didn't change.
 
@@ -112,11 +118,12 @@ Still outstanding:
 | Area | Spec (`docs/BUILD-PLAN.md`) | Code today | Phase |
 |---|---|---|---|
 | Voting visibility | Host picks Public or Anonymous (§4) | Always broadcasts a live tally | 3 |
-| Currency | Persistent, account-bound (§9, §11) | localStorage only (`useShop.ts`) | 3 |
 | Voice/video lobbies | Host can pick voice or video chat, with mic/cam toggles (§4, §5) | `ChatType` and `DeliberationScreen` handle both, but the host form only offers text on/off — correct for Phase 1, which §16 scopes to "text chat only (+ 'None')" | 2 |
 | Not built | Emoji reactions during video (§5), premium (§12), ads (§13), loot boxes (§10), profanity filter (§17), report/block (§17), friends (§11), matchmaking (§16) | — | 2–4 |
 
-Phase 3 has started. **Reconnect is done** — it wasn't a spec item, but it blocked the two that are, so it went first: persistent currency is only worth persisting once identity survives a refresh, and cosmetics are already account-shaped while being sent at join time. Both are now unblocked. See "A player is a browser, not a socket" and "Dropping is not leaving" above; the remaining two rows are untouched.
+Phase 3 is under way. **Reconnect** went first — not a spec item, but it blocked what is: currency was only worth persisting once identity survived a refresh. **Persistent currency (§9, §11) is done** too, along with the claim-your-account prompt §11 attaches to it. Voting visibility is the one Phase 3 row left.
+
+Two known holes left open on purpose, both pre-existing and neither about money: `Player.cosmetics` is validated for shape but **not for ownership**, so a doctored client can wear something it never bought (the wallet API does check, the socket join doesn't); and the `GameHistory` model still has no reader or writer.
 
 ## Conventions
 

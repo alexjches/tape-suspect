@@ -17,11 +17,40 @@ model User {
   avatar        String?
   password      String?   // null for OAuth users
   emailVerified DateTime?
+
+  // ── Wallet (spec §9, §11) ──
+  // The authoritative coin balance. Only the server writes it: rewards are
+  // credited in finalizeResults, spends go through purchaseCosmetic(). The
+  // client is never trusted with a number here.
+  coins         Int       @default(0)
+  // Equipped loadout as JSON — three nullable slots, see EquippedCosmetics.
+  // A column rather than a table because it is one row's worth of state that
+  // is always read and written whole.
+  equipped      String?
+  // Set once, when a guest's localStorage progress is folded into a new
+  // account (§11's claim-your-account prompt). Guards against replaying the
+  // same claim to mint coins.
+  claimedGuestAt DateTime?
+
+  cosmetics     CosmeticOwnership[]
   accounts      Account[]
   sessions      Session[]
   presets       Preset[]
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+}
+
+// One row per cosmetic a player owns (§10). A table rather than a JSON blob
+// because the unique constraint is what makes buying the same item twice
+// impossible even if two requests race.
+model CosmeticOwnership {
+  id         String   @id @default(cuid())
+  userId     String
+  itemId     String
+  acquiredAt DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, itemId])
 }
 
 model Account {

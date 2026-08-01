@@ -2,9 +2,10 @@
 // src/app/shop/page.tsx — Cosmetics shop
 // Layout mirrors #shop-section in vhs-frontend-example/home.html (spec §21).
 //
-// Coins are still localStorage-only (see useShop). Nothing bought here
-// affects a live game yet — applying an equipped skin to the lobby consoles
-// and the results cassette is Phase 3, alongside account-bound currency.
+// Buying is a server round trip for signed-in players — the price and the
+// balance are both checked in the database, so the button has to be able to
+// fail for reasons this page didn't predict. Guests still transact against
+// localStorage; see useShop.
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -21,18 +22,24 @@ const EARNINGS = [
 ];
 
 export default function ShopPage() {
-  const { coins, equipped, buy, equip, ownsItem } = useShop();
+  const { coins, equipped, buy, equip, ownsItem, loaded, persistent } = useShop();
   const [tab, setTab] = useState<CosmeticCategory>('tape-skin');
   const [buyingId, setBuyingId] = useState<string | null>(null);
   const [brokeId, setBrokeId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Blocks a second click while the purchase is in flight. */
+  const [pendingId, setPendingId] = useState<string | null>(null);
 
   const items = SHOP_ITEMS.filter((i) => i.category === tab);
 
-  function handleBuy(item: ShopItem) {
-    if (ownsItem(item.id)) return;
+  async function handleBuy(item: ShopItem) {
+    if (ownsItem(item.id) || pendingId) return;
+    setPendingId(item.id);
 
-    if (buy(item.id)) {
+    const result = await buy(item.id);
+    setPendingId(null);
+
+    if (result.ok) {
       setBuyingId(item.id);
       setNotice(`✅ ${item.name.toUpperCase()} PURCHASED & EQUIPPED`);
       setTimeout(() => {
@@ -41,7 +48,7 @@ export default function ShopPage() {
       }, 2500);
     } else {
       setBrokeId(item.id);
-      setNotice('❌ NOT ENOUGH REWIND COINS');
+      setNotice(`❌ ${result.error.toUpperCase()}`);
       setTimeout(() => {
         setBrokeId(null);
         setNotice(null);
@@ -101,6 +108,26 @@ export default function ShopPage() {
           ))}
         </div>
 
+        {/* §11: a guest's coins live in this browser and nowhere else. Say so
+            where they are about to be spent, not only after a round. */}
+        {loaded && !persistent && (
+          <div
+            className="osd-menu"
+            style={{ maxWidth: 560, margin: '-16px auto 32px', textAlign: 'center' }}
+          >
+            <div className="osd-menu-row" style={{ display: 'block' }}>
+              <span style={{ color: 'var(--neon-yellow)' }}>⚠ PLAYING AS A GUEST</span>
+              <p className="osd-text" style={{ color: 'var(--ink-soft)', marginTop: 6 }}>
+                These coins live in this browser only.{' '}
+                <Link href="/signup" style={{ color: 'var(--neon-cyan)' }}>
+                  CREATE AN ACCOUNT
+                </Link>{' '}
+                to keep them — what you have now comes with you.
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="shop-tabs">
           {COSMETIC_CATEGORIES.map((c) => (
             <button
@@ -156,10 +183,11 @@ export default function ShopPage() {
                     className={`btn-brutal magenta shop-buy-btn${
                       brokeId === item.id ? ' insufficient' : ''
                     }`}
+                    disabled={!loaded || pendingId === item.id}
                     onClick={() => handleBuy(item)}
                     title={canAfford ? undefined : 'Not enough coins'}
                   >
-                    BUY
+                    {pendingId === item.id ? '…' : 'BUY'}
                   </button>
                 )}
 
