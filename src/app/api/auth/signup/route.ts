@@ -11,8 +11,8 @@ const SignupSchema = z.object({
   email: z.string().email('Invalid email'),
   password: z.string().min(6, 'Password must be at least 6 characters'),
   name: z.string().min(2, 'Name must be at least 2 characters').max(20, 'Name too long'),
-  // Optional: the picker on /signup sends one. Anything outside the allowed
-  // set is discarded rather than rejected, and a random avatar is used.
+  // Optional: /signup sends the character code it dealt. Anything that isn't
+  // a valid code is discarded rather than rejected, and a fresh one dealt.
   avatar: z.string().optional(),
 });
 

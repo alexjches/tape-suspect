@@ -48,6 +48,7 @@ Server-authoritative phase machine: `lobby → playing → words → deliberatio
 
 1. **Lobby** — the host picks public/private, whether in-app text chat is on, and a genre (or supplies two custom video URLs). 4–10 players.
 2. **Playing** — one player is secretly assigned the odd video. Everyone's tape starts at the same moment; no controls, no scrubbing, no pausing. **You are never told your own role.**
+   - **Live reactions** — an emoji button in the corner of the player opens a row of 😂 😮 😢 🔥 👀, and whatever you send floats up the corner of *everyone's* video. Just the emoji, no names. Apple devices render Apple's own emoji; everything else gets a bundled 3KB subset so the set looks the same across the lobby (see `public/fonts/README.md`). The Suspect is watching a different tape, so a reaction landing at the wrong moment is a tell — the same idea as the word phase, in real time, and you have to work out for yourself whose it was.
 3. **Ready Check** — Ready is live for the whole video, not just once your tape ends, so a lobby that has all seen enough can cut a long clip short. The phase advances when everyone is ready, or 10s after the Suspect's video finishes.
 4. **Words** — 10 seconds each, in turn, to describe the video in a single word. Timing out submits a blank.
 5. **Deliberation** — one 90-second window with chat and voting live at the same time. A tie doesn't end the round: it triggers a restricted re-vote between the tied players.
@@ -68,7 +69,62 @@ Copy `.env.example` to `.env`. `.env` and `.env.local` are gitignored.
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional | Enables Google sign-in |
 | `APPLE_CLIENT_ID` / `APPLE_CLIENT_SECRET` | Optional | Enables Apple sign-in. The secret is a signed ES256 JWT that expires within 6 months, not a static string |
 
-OAuth providers are spliced in only when their env vars are present, so the app runs fine with email/password alone — and `/login` asks NextAuth which ones are live rather than hardcoding the buttons, so an unconfigured provider simply doesn't render.
+OAuth providers are spliced in only when their env vars are present, so the app runs fine with email/password alone — and `/login` and `/signup` ask NextAuth which ones are live rather than hardcoding the buttons, so an unconfigured provider simply doesn't render.
+
+### Setting up Google sign-in
+
+1. [Google Cloud console](https://console.cloud.google.com/apis/credentials) → **Create credentials → OAuth client ID → Web application**.
+2. Under **Authorised redirect URIs**, add one per environment — the path is fixed:
+   - `http://localhost:3000/api/auth/callback/google`
+   - `https://your-domain/api/auth/callback/google`
+3. Put the client ID and secret in `.env` and restart the server. The buttons appear on `/login` and `/signup`.
+
+### Setting up Apple sign-in
+
+Apple is more work than Google, and **cannot be tested on localhost** — it rejects `http://` and non-public redirect URLs outright, so you need a deployed https host.
+
+1. In the [Apple Developer portal](https://developer.apple.com/account/resources/identifiers/list): create an **App ID** with *Sign in with Apple* enabled, then a **Services ID** (e.g. `com.example.imposter.web`). The Services ID — not the App ID — is `APPLE_CLIENT_ID`.
+2. Configure the Services ID with your domain and the return URL `https://your-domain/api/auth/callback/apple`.
+3. Under **Keys**, create a key with *Sign in with Apple* enabled and download the `.p8`. It downloads exactly once; keep it out of git.
+4. Generate the client secret — a signed ES256 JWT, not a string you can copy from the dashboard:
+
+   ```bash
+   npm run apple:secret -- \
+     --team-id ABCDE12345 \
+     --key-id XYZ9876543 \
+     --client-id com.example.imposter.web \
+     --key ./AuthKey_XYZ9876543.p8
+   ```
+
+   It prints the two `.env` lines and the expiry date. **Apple caps the lifetime at 6 months**, so this is a recurring chore — put the expiry in a calendar, because when it lapses Apple starts refusing sign-ins with `invalid_client`.
+
+### Accounts, avatars and account linking
+
+- An OAuth account is created on first sign-in — there is nothing extra for `/signup` to do, which is why both pages show the same buttons.
+- An avatar here is an **illustrated character** from a fixed cast of 12, not a photo — the roster is `src/lib/avatars.ts`, the art is `public/avatars/`, drawn by `scripts/generate-characters.mjs`. A provider's profile picture is therefore discarded. Apple sends no name at all; the email's local part is used.
+- You are **dealt** a character on arrival rather than choosing from a grid, and the ⟳ button on the corner of the preview steps to the next one. Same control on `/signup`, on the guest gate in `/dashboard`, and when joining a room by link as a guest.
+- Characters travel as a short id (`c07`). Earlier generations of stored avatar — the original emoji, the procedural `a70312` part-codes that briefly replaced them, and ids from a discarded larger cast — are hashed to a stable character on the fly, so nothing ever needed migrating and an old player always resolves to the same face.
+- Two players in one lobby can end up on the same character. That's accepted, the way it is in Gartic Phone.
+- Signing in with Google using an email that already has a **password** account is refused (`OAuthAccountNotLinked`), and `/login` explains why. Linking them automatically would be an account-takeover route, since signup doesn't verify email addresses — anyone could register someone else's and wait to inherit their Google sign-in.
+
+### Testing a round on your own
+
+Hosting a lobby in development shows a **SIMULATE PLAYERS** button. It fills the room with bots so the round can be started solo — they load their tapes, react with emoji while the video plays, take their turns in the word phase and vote in deliberation, so every screen has real content to look at without opening four browsers.
+
+They are labelled: `(BOT)` in the name and a `SIM` badge on the console. A lobby should never quietly pretend a bot is a person.
+
+Off by default in production, on by default in development — set `ALLOW_BOT_PLAYERS` to override either way. The lobby button only renders when the *server* says bots are allowed, so it can never be visible and inert.
+
+### Playing on a phone
+
+Every route and all five in-game phases are laid out for a phone, verified at 390×844 (iPhone 12/13/14) and at desktop width to make sure neither regressed.
+
+- The frame is sized in `dvh`, not `vh` — mobile browsers report `100vh` as the height with the URL bar *retracted*, which puts the bottom row of a fixed-position layout under the browser chrome with no way to scroll it back.
+- `viewportFit: cover` lets the layout reach under a notch, and safe-area insets pad the rows that would otherwise sit beneath it.
+- Zoom is **not** capped. The usual fix for iOS zooming a focused input is `maximum-scale=1`, which also takes pinch-zoom away from everyone; inputs are set to 16px instead, which costs nobody anything.
+- Two-column layouts collapse, player consoles fill their cell instead of overflowing it, and the reaction row and the ready button are moved apart so they don't fight for the same corner.
+
+If you add a screen: **anything a breakpoint has to override cannot be an inline style.** An inline `style={{ gridTemplateColumns }}` beats every media query, which is exactly how `/dashboard` came to render two crushed columns on a phone while a perfectly good 820px rule sat there unable to apply.
 
 ### Switching to PostgreSQL
 

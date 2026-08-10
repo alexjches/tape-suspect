@@ -13,11 +13,18 @@ import { useShop } from '@/hooks/useShop';
 import { CrtShell } from '@/components/vhs/CrtShell';
 import { LobbyScreen } from '@/components/lobby/LobbyScreen';
 import { GameScreen } from '@/components/game/GameScreen';
+import { PromptScreen } from '@/components/game/PromptScreen';
 import { WordsScreen } from '@/components/game/WordsScreen';
+import { DrawScreen } from '@/components/game/DrawScreen';
+import { WavelengthScreen } from '@/components/game/WavelengthScreen';
+import { BluffScreen } from '@/components/game/BluffScreen';
 import { DeliberationScreen } from '@/components/game/DeliberationScreen';
 import { ResultsScreen } from '@/components/results/ResultsScreen';
+import { Avatar } from '@/components/vhs/Avatar';
+import { randomAvatar, nextAvatar } from '@/lib/avatars';
 
-const GUEST_AVATARS = ['🎮', '👾', '🕵️', '🎭', '🦊', '🐺', '🦁', '🐸'];
+// Placeholder for the first paint; the effect below deals a real character.
+const FIRST_FRAME_AVATAR = 'c00';
 
 export default function RoomPage() {
   const { code } = useParams<{ code: string }>();
@@ -37,12 +44,11 @@ export default function RoomPage() {
   const socket = getSocket();
 
   const [localGuestName, setLocalGuestName] = useState('');
-  const [localGuestAvatar] = useState(
-    () => GUEST_AVATARS[Math.floor(Math.random() * GUEST_AVATARS.length)]
-  );
+  const [localGuestAvatar, setLocalGuestAvatar] = useState(FIRST_FRAME_AVATAR);
 
   useEffect(() => {
     setPlayerId(getPlayerId());
+    setLocalGuestAvatar(randomAvatar());
   }, []);
 
   useEffect(() => {
@@ -55,7 +61,7 @@ export default function RoomPage() {
     if (session?.user?.name) {
       return {
         name: session.user.name,
-        avatar: (session.user as any).image || '🎮',
+        avatar: (session.user as any).image || FIRST_FRAME_AVATAR,
         userId: ((session.user as any).id as string | null) || null,
       };
     }
@@ -63,7 +69,7 @@ export default function RoomPage() {
     if (storedName) {
       return {
         name: storedName,
-        avatar: localStorage.getItem('imposter_guest_avatar') || '🎮',
+        avatar: localStorage.getItem('imposter_guest_avatar') || FIRST_FRAME_AVATAR,
         userId: null,
       };
     }
@@ -147,7 +153,36 @@ export default function RoomPage() {
             <p className="osd-text" style={{ color: '#aaa', textAlign: 'center', margin: '8px 0' }}>
               Joining tape <span style={{ color: 'var(--neon-magenta)' }}>{code}</span>
             </p>
-            <div style={{ fontSize: '3rem', textAlign: 'center' }}>{localGuestAvatar}</div>
+            {/* Same creator as /signup and the guest gate on /dashboard. */}
+            <div className="avatar-creator-box" style={{ margin: '10px 0' }}>
+              <div className="avatar-preview-container character-slot">
+                <div id="avatar-svg-wrapper">
+                  <Avatar code={localGuestAvatar} size={150} />
+                </div>
+                <button
+                  id="btn-randomize-avatar"
+                  type="button"
+                  className="btn-circular"
+                  title="Next character"
+                  aria-label="Next character"
+                  onClick={() => setLocalGuestAvatar((c) => nextAvatar(c))}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width={24}
+                    height={24}
+                    stroke="currentColor"
+                    strokeWidth={3}
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+                  </svg>
+                </button>
+              </div>
+              <div className="avatar-helper-text">CLICK TO CHANGE CHARACTER</div>
+            </div>
             <input
               id="guest-join-name-input"
               type="text"
@@ -213,7 +248,9 @@ export default function RoomPage() {
   }
 
   // The video phase takes over the whole viewport — no CRT chrome over it.
-  if (state.phase === 'playing' && state.assignment) {
+  // A prompt round keeps the frame: it is a card to read, not a tape to watch,
+  // and the lockdown that justifies going full-bleed has nothing to lock down.
+  if (state.phase === 'playing' && state.assignment?.videoUrl) {
     return (
       <GameScreen
         code={code}
@@ -243,6 +280,16 @@ export default function RoomPage() {
         />
       )}
 
+      {state.phase === 'playing' && state.assignment?.prompt && (
+        <PromptScreen
+          code={code}
+          room={state.room}
+          assignment={state.assignment}
+          readyState={state.readyState}
+          actions={actions}
+        />
+      )}
+
       {state.phase === 'words' && (
         <WordsScreen
           room={state.room}
@@ -250,6 +297,41 @@ export default function RoomPage() {
           code={code}
           words={state.words}
           turnState={state.turnState}
+          actions={actions}
+        />
+      )}
+
+      {state.phase === 'drawing' && (
+        <DrawScreen
+          room={state.room}
+          playerId={playerId}
+          code={code}
+          assignment={state.assignment}
+          strokes={state.strokes}
+          turnState={state.turnState}
+          actions={actions}
+        />
+      )}
+
+      {(state.phase === 'writing' || state.phase === 'bluffvote') && (
+        <BluffScreen
+          room={state.room}
+          playerId={playerId}
+          code={code}
+          phase={state.phase}
+          bluffState={state.bluffState}
+          actions={actions}
+        />
+      )}
+
+      {(state.phase === 'clue' || state.phase === 'guessing') && (
+        <WavelengthScreen
+          room={state.room}
+          playerId={playerId}
+          code={code}
+          phase={state.phase}
+          assignment={state.assignment}
+          spectrumState={state.spectrumState}
           actions={actions}
         />
       )}

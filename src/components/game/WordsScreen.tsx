@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RoomPublic, GameWord, TurnState } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
+import { Avatar } from '@/components/vhs/Avatar';
 
 interface Props {
   room: RoomPublic;
@@ -92,7 +93,12 @@ export function WordsScreen({ room, playerId, code, words, turnState, actions }:
                   color: isMyTurn ? 'var(--neon-green)' : 'var(--neon-cyan)',
                 }}
               >
-                {activePlayer.avatar} {isMyTurn ? 'YOUR TURN' : activePlayer.name}
+                <span
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}
+                >
+                  <Avatar code={activePlayer.avatar} size={40} />
+                  {isMyTurn ? 'YOUR TURN' : activePlayer.name}
+                </span>
               </div>
               <div
                 className="osd-text"
@@ -127,7 +133,9 @@ export function WordsScreen({ room, playerId, code, words, turnState, actions }:
                     borderColor: p.id === activeId ? 'var(--neon-green)' : undefined,
                   }}
                 >
-                  <span className="word-chip-author">{p.avatar}</span>
+                  <span className="word-chip-author">
+                    <Avatar code={p.avatar} size={22} />
+                  </span>
                   <span className="word-chip-word">
                     {p.name}
                     {out ? ' ⛔' : done ? ' ✓' : ''}

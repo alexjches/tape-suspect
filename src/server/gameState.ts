@@ -10,7 +10,15 @@
 //   deliberation ONE 90s window with chat and voting live simultaneously (8)
 //   results      roles revealed, coins awarded (9)
 
-import type { EquippedCosmetics, GameResults, GameWord, VoteVisibility } from '../types';
+import type {
+  DrawStroke,
+  EquippedCosmetics,
+  GameResults,
+  GameWord,
+  VoteVisibility,
+} from '../types';
+// Client-safe metadata only — the drawing *pool* lives in server/drawLibrary.
+import { isDrawStyle, supportsCustomContent } from '../lib/videoCategories';
 
 export type PlayerStatus = 'connected' | 'disconnected';
 
@@ -44,14 +52,63 @@ export interface Player {
    */
   isSpectator: boolean;
   status: PlayerStatus;
+  /**
+   * A simulated player (src/server/bots.ts) — a testing aid, never a real
+   * participant. Broadcast, unlike the runtime below it: a lobby must be
+   * honest about which of its nine players are furniture, or the feature is
+   * indistinguishable from padding a room with fake humans.
+   */
+  isBot?: boolean;
+  /**
+   * Bot scheduling state. Server-only and present only on bots; dies with the
+   * room, so it needs no cleanup pass of its own.
+   */
+  bot?: import('./bots').BotRuntime;
+  /**
+   * When this player last got a reaction through (§5), for the send throttle.
+   * Server-only — `sanitizeRoom()` picks its fields explicitly, so this never
+   * reaches a client, and nothing outside the throttle should read it.
+   * Optional so the reconnect and rejoin paths that rebuild a Player don't
+   * have to carry a value that means nothing between rounds.
+   */
+  lastReactionAt?: number;
 }
 
-export type GamePhase = 'lobby' | 'playing' | 'words' | 'deliberation' | 'results';
+export type GamePhase =
+  | 'lobby'
+  | 'playing'
+  | 'words'
+  | 'drawing'
+  | 'clue'
+  | 'guessing'
+  | 'writing'
+  | 'bluffvote'
+  | 'deliberation'
+  | 'results';
 
 export interface RoomSettings {
   isPublic: boolean;
+  /**
+   * Run the round on content the host supplied rather than on the mode's pool.
+   *
+   * This is what Custom is now: a switch on whatever mode is selected, not a
+   * mode of its own. On a video mode it means the two URLs below; on a prompt
+   * mode it means the two cards below. `supportsCustomContent()` says which
+   * modes accept it at all — the switch is ignored on the other three, which
+   * have nothing pair-shaped to type.
+   */
+  useCustomContent: boolean;
   normalVideoUrl: string;
   imposterVideoUrl: string;
+  /**
+   * The host's own word/question pair, when custom content is on for a prompt
+   * mode. Under exactly the rule the URLs are under: `sanitizeRoom()` carries
+   * only booleans for these, and the text itself reaches a player only through
+   * `assignmentFor()`. A crew member who could read the suspect's card in a
+   * room broadcast is the whole game given away.
+   */
+  customNormalPrompt: string;
+  customImposterPrompt: string;
   maxPlayers: number;
   wordsPerPlayer: number;   // words each player gets in the word phase
   imposterCount: number;    // pinned to 1 in Phase 1 (section 16)
@@ -65,6 +122,12 @@ export interface RoomSettings {
    */
   voteVisibility: VoteVisibility;
   videoCategory: string | null;
+  /**
+   * Fake Artist: does the fake get a category hint alongside "you are the
+   * fake"? Off means drawing blind off other people's strokes, which is much
+   * harder and much funnier. Lobby-phase only, like every other setting.
+   */
+  themeHint: boolean;
 }
 
 export interface RoomState {
@@ -75,6 +138,65 @@ export interface RoomState {
   imposterId: string | null;      // primary imposter (backwards compat)
   imposterIds: string[];          // all imposters
   settings: RoomSettings;
+
+  /**
+   * The round's word or question pair, on a `word`/`question` mode. Server-only
+   * and under exactly the rule the video URLs are under: `sanitizeRoom()` never
+   * carries it, and each half reaches only the players it belongs to, through
+   * the per-socket `game:assigned`. Both halves become public in `game:results`
+   * and not one moment earlier — seeing the other card is seeing the answer.
+   *
+   * Null on a video round.
+   */
+  prompts: { normal: string; imposter: string } | null;
+
+  /**
+   * The Fake Artist word and its category hint. Server-only for the same
+   * reason as `prompts` — `sanitizeRoom()` builds field by field and never
+   * carries it, and `assignmentFor()` is the only way either half leaves.
+   *
+   * Null on every other mode.
+   */
+  drawWord: { word: string; theme: string } | null;
+
+  // ── Wavelength ──
+  // The spectrum is public and rides sanitizeRoom; the target and the psychic
+  // are not. Splitting them is the whole secrecy surface of the mode: everyone
+  // must see the scale they are guessing on, and exactly one player may see
+  // where on it the answer sits.
+  spectrum: { left: string; right: string } | null;
+  /** 0-100. Server-only until the reveal. */
+  spectrumTarget: number | null;
+  /** The one player dealt the target. Server-only — naming them names the
+   *  only player whose guess is not a guess. */
+  psychicId: string | null;
+  /** Public the moment it is submitted; that is the point of it. */
+  psychicClue: string | null;
+  /** playerId -> 0-100. Withheld until every guess is in, so nobody can
+   *  anchor on somebody else's dial. */
+  guesses: Record<string, number>;
+
+  // ── Bluff Definitions ──
+  // The word is public from the start of the writing phase; the true
+  // definition is not, and only becomes visible sitting anonymously in the
+  // ballot beside the fakes.
+  bluffWord: { word: string; definition: string } | null;
+  /** playerId -> their fake definition. Never broadcast with authors attached
+   *  until results — that mapping IS the game. */
+  definitions: Record<string, string>;
+  /** The ballot order, fixed once so every client sees the same list. */
+  bluffOrder: string[];
+  /** voterId -> option id (a playerId, or REAL_DEFINITION_ID). */
+  bluffVotes: Record<string, string>;
+  /**
+   * Every stroke on the shared canvas, in order.
+   *
+   * Unlike `words` this is not only for reconnects — it *is* the board. Each
+   * client accumulates strokes as they arrive, and a late or returning player
+   * gets the whole array replayed so they see the same picture as everyone
+   * else. Carries no role information: crew and fake emit an identical shape.
+   */
+  strokes: DrawStroke[];
 
   // ── Ready check, section 6 ──
   videoEnded: Record<string, boolean>;      // playerId -> their video finished
@@ -114,12 +236,13 @@ export interface RoomState {
   revoteCandidates: string[] | null;        // non-null while a tie is unresolved
 
   /**
-   * Who last pasted the Custom genre's video URLs. They sit the round out
-   * (section 4) — tracked rather than assumed to be the host, because the
-   * host can be handed on after the links go in, and it's the person who saw
-   * the URLs who knows the answers.
+   * Who last supplied the custom content — the two URLs, or the two prompt
+   * cards. They sit the round out (section 4), because they have seen both
+   * halves and so already know which one is the odd one out. Tracked rather
+   * than assumed to be the host: the host can be handed on after the content
+   * goes in, and it is the person who typed it who knows.
    */
-  customVideoAuthorId: string | null;
+  customContentAuthorId: string | null;
 
   /**
    * Roster snapshot taken when a finished lobby is re-formed. A round ending
@@ -151,6 +274,20 @@ const rooms = new Map<string, RoomState>();
 /** Fields reset between rounds and on every fresh game start. */
 function freshRoundState() {
   return {
+    // Cleared with the rest of the round: a lobby that switches from Words to
+    // Sports must not carry last round's card into the reveal.
+    prompts: null as { normal: string; imposter: string } | null,
+    drawWord: null as { word: string; theme: string } | null,
+    strokes: [] as DrawStroke[],
+    spectrum: null as { left: string; right: string } | null,
+    spectrumTarget: null as number | null,
+    psychicId: null as string | null,
+    psychicClue: null as string | null,
+    guesses: {} as Record<string, number>,
+    bluffWord: null as { word: string; definition: string } | null,
+    definitions: {} as Record<string, string>,
+    bluffOrder: [] as string[],
+    bluffVotes: {} as Record<string, string>,
     videoEnded: {} as Record<string, boolean>,
     readyToAdvance: {} as Record<string, boolean>,
     imposterVideoEndedAt: null,
@@ -180,7 +317,7 @@ export function createRoom(code: string, host: Player, settings: RoomSettings): 
     imposterIds: [],
     settings,
     ...freshRoundState(),
-    customVideoAuthorId: null,
+    customContentAuthorId: null,
     pastPlayers: [],
     lastResults: null,
     usedVideoIds: [],
@@ -203,6 +340,33 @@ export function deleteRoom(code: string): void {
   rooms.delete(code);
 }
 
+/**
+ * The lobby this person currently hosts, if any. One open lobby per host is
+ * the rule; this is what finds the one already open.
+ *
+ * Keyed on who is *currently* host rather than on who created the room. That
+ * means handing the lobby on frees you to open another, and there is no
+ * creator field to keep in step with `room:transferHost`. A signed-in host
+ * matches on their account; a guest, who has none, matches on the durable
+ * browser id from src/lib/playerId.ts — without that, guest mode would be an
+ * unlimited lobby-spawner.
+ *
+ * The userId check is guarded on userId being set, or every guest-hosted room
+ * (userId null) would match every other guest.
+ */
+export function findRoomHostedBy(
+  userId: string | null,
+  playerId: string
+): RoomState | undefined {
+  for (const room of rooms.values()) {
+    const host = room.players.find((p) => p.id === room.hostId);
+    if (!host) continue;
+    if (userId && host.userId === userId) return room;
+    if (host.id === playerId) return room;
+  }
+  return undefined;
+}
+
 export function getPublicRooms(): RoomState[] {
   return Array.from(rooms.values()).filter(
     // A lobby whose players are all inside their reconnect window is not a
@@ -214,6 +378,52 @@ export function getPublicRooms(): RoomState[] {
   );
 }
 
+/**
+ * Drops any player row this socket already holds in the room under a *different*
+ * id. Returns the ids that went.
+ *
+ * One connection is one player, and the room has to hold to that. Two rows on a
+ * single socket means only one of them can ever act — every handler resolves the
+ * actor through `socket.data.playerId`, which names exactly one — so the other
+ * sits there `connected`, never ready, never voting, and every phase that waits
+ * on all players waits forever. The observed symptom is a lobby showing three
+ * players and reporting two.
+ *
+ * That is what a join with no durable id produced: `durableId()` fell back to
+ * `socket.id`, and the room page then joined again on the same socket under the
+ * real localStorage id. The client side is fixed, but the invariant belongs here
+ * — this is the only place that can actually guarantee it.
+ *
+ * The stale row is dropped rather than re-keyed. Re-keying would have to rewrite
+ * every id-keyed structure on RoomState (`votes`, `turnOrder`, `imposterIds`,
+ * `accusedIds`, `readyToAdvance`, `wordsUsed`…) and a partial rewrite is a silent
+ * corruption; the caller adds the replacement row immediately after.
+ */
+export function dropStaleSocketRows(
+  room: RoomState,
+  socketId: string,
+  keepId: string
+): string[] {
+  // Bots carry socketId '' (they have no socket), so an empty id would match
+  // every one of them at once.
+  if (!socketId) return [];
+  const stale = room.players.filter((p) => p.socketId === socketId && p.id !== keepId);
+  if (stale.length === 0) return [];
+
+  const staleIds = stale.map((p) => p.id);
+  room.players = room.players.filter((p) => !staleIds.includes(p.id));
+
+  // A phantom can be handed the lobby by `finalizeDrop`'s heir search, and a
+  // hostId pointing at a row that no longer exists is a lobby nobody can start.
+  if (staleIds.includes(room.hostId)) {
+    const heir = room.players.find((p) => p.status === 'connected' && !p.isBot);
+    // Falling back to keepId is the honest answer: the stale row was this same
+    // person, and the caller is about to seat them.
+    room.hostId = heir ? heir.id : keepId;
+  }
+  return staleIds;
+}
+
 export function addPlayer(code: string, player: Player): RoomState | null {
   const room = rooms.get(code);
   if (!room) return null;
@@ -222,10 +432,36 @@ export function addPlayer(code: string, player: Player): RoomState | null {
   return room;
 }
 
+/** Everyone who is not a simulated player. */
+export function humanPlayers(room: RoomState): Player[] {
+  return room.players.filter((p) => !p.isBot);
+}
+
+/**
+ * Drops every bot from a lobby. Returns how many went.
+ *
+ * Lobby phase only at the call sites — pulling simulated players out of a
+ * running round would leave their ids in `turnOrder`, `votes` and possibly
+ * `imposterIds`, which is the same mess `finalizeDrop` exists to clean up
+ * and is not worth reproducing for a testing aid.
+ */
+export function removeBots(room: RoomState): number {
+  const before = room.players.length;
+  room.players = room.players.filter((p) => !p.isBot);
+  return before - room.players.length;
+}
+
 export function removePlayer(code: string, playerId: string): RoomState | null {
   const room = rooms.get(code);
   if (!room) return null;
   room.players = room.players.filter((p) => p.id !== playerId);
+  // A room whose last human has gone is over, even though bots never
+  // disconnect and would otherwise hold it open forever — `players.length`
+  // alone would never reach zero and the lobby would sit in the public list
+  // being permanently unjoinable-but-listed.
+  if (room.players.length > 0 && humanPlayers(room).length === 0) {
+    room.players = [];
+  }
   if (room.players.length === 0) {
     rooms.delete(code);
     return null;
@@ -275,7 +511,12 @@ function setHost(room: RoomState, targetId: string): void {
   room.players.forEach((p) => (p.isHost = p.id === targetId));
 }
 
-export type HostTransferRejection = 'not_host' | 'no_such_player' | 'offline' | 'already_host';
+export type HostTransferRejection =
+  | 'not_host'
+  | 'no_such_player'
+  | 'offline'
+  | 'already_host'
+  | 'is_bot';
 
 /**
  * Manual host transfer (section 4): the host can hand the role to any other
@@ -291,6 +532,10 @@ export function transferHost(
   const target = room.players.find((p) => p.id === targetId);
   if (!target) return { ok: false, reason: 'no_such_player' };
   if (target.status !== 'connected') return { ok: false, reason: 'offline' };
+  // A simulated player reports as connected but has no socket and never
+  // acts on its own behalf, so handing it the lobby leaves a room nobody
+  // can start and nobody can take back.
+  if (target.isBot) return { ok: false, reason: 'is_bot' };
   setHost(room, targetId);
   return { ok: true };
 }
@@ -388,17 +633,33 @@ export function activePlayers(room: RoomState): Player[] {
 }
 
 /**
- * Marks whoever supplied the Custom links as sitting this round out, and
+ * Marks whoever supplied the custom content as sitting this round out, and
  * clears the flag for everyone else. Returns that player, or null when the
- * round is on a pool genre or the author has left.
+ * round is running off a pool or the author has left.
  */
 export function assignSpectator(room: RoomState, isCustomRound: boolean): Player | null {
   let sitter: Player | null = null;
-  if (isCustomRound && room.customVideoAuthorId) {
-    sitter = room.players.find((p) => p.id === room.customVideoAuthorId) ?? null;
+  if (isCustomRound && room.customContentAuthorId) {
+    sitter = room.players.find((p) => p.id === room.customContentAuthorId) ?? null;
   }
   room.players.forEach((p) => (p.isSpectator = p.id === sitter?.id));
   return sitter;
+}
+
+/**
+ * Is this round running on the host's own content rather than on a pool?
+ *
+ * The single answer to that question, because four places need it and they must
+ * agree: the start check (which needs a spare head, since the author sits out),
+ * the bot-fill default (same reason), the deal (skip the pool, use what was
+ * typed) and the spectator assignment.
+ *
+ * The switch alone is not enough — it stays on when the host flips to Fake
+ * Artist, and a mode with nothing pair-shaped to type must not end up with a
+ * player sitting out for content that was never used.
+ */
+export function usesCustomContent(room: RoomState): boolean {
+  return room.settings.useCustomContent && supportsCustomContent(room.settings.videoCategory);
 }
 
 /** 2 for a 2-imposter game, 1 otherwise (section 3). */
@@ -425,15 +686,132 @@ function shuffle<T>(input: T[]): T[] {
   return arr;
 }
 
-export function beginWordPhase(room: RoomState): void {
-  room.phase = 'words';
+/**
+ * Opens a turn-taking phase — the word round, or Fake Artist's drawing round.
+ *
+ * One engine for both, deliberately. The two phases differ only in what a turn
+ * *produces* (a word, a stroke) and how long it lasts; the ordering, the skip
+ * over absent players, the exhaustion check and the hand-off to deliberation
+ * are identical, and a second copy would be a second place for the 2-imposter
+ * round-2 path and the reconnect path to drift out of step.
+ *
+ * `wordsUsed` and `settings.wordsPerPlayer` therefore count strokes on a
+ * drawing round. The names are left alone for the same reason
+ * `settings.videoCategory` still holds mode ids: renaming them ripples through
+ * RoomState, RoomPublic, two socket events and both screens for no behavioural
+ * gain.
+ */
+function beginTurnPhase(room: RoomState, phase: 'words' | 'drawing'): void {
+  room.phase = phase;
   room.wordsUsed = {};
   // Turn order is randomized each round and visible to all players (section 7).
   // The round-1 accused is not in it (section 3).
   room.turnOrder = shuffle(activePlayers(room).map((p) => p.id));
   room.turnIndex = 0;
   room.activePlayerId = room.turnOrder[0] ?? null;
-  room.turnTimeLeft = TURN_SECONDS;
+  room.turnTimeLeft = turnSeconds(room);
+}
+
+export function beginWordPhase(room: RoomState): void {
+  beginTurnPhase(room, 'words');
+}
+
+export function beginDrawPhase(room: RoomState): void {
+  room.strokes = [];
+  beginTurnPhase(room, 'drawing');
+}
+
+// ─── Wavelength ──────────────────────────────────────────────────────────────
+//
+// No turn order, no ballot, no hidden role to catch. The psychic writes one
+// clue, everyone else dials a number, and the round scores by distance. It
+// shares the lobby, the roster and the reward plumbing and nothing else — which
+// is why `GameResults.kind` exists rather than an accusation being faked up.
+
+export const CLUE_SECONDS = 60;
+export const GUESS_SECONDS = 60;
+
+/** Picks the psychic and opens the clue phase. */
+export function beginCluePhase(room: RoomState, psychicId: string): void {
+  room.phase = 'clue';
+  room.psychicId = psychicId;
+  room.psychicClue = null;
+  room.guesses = {};
+  room.activePlayerId = psychicId;
+  room.turnTimeLeft = CLUE_SECONDS;
+}
+
+export function beginGuessPhase(room: RoomState, clue: string): void {
+  room.phase = 'guessing';
+  room.psychicClue = clue;
+  room.activePlayerId = null;
+  room.turnTimeLeft = GUESS_SECONDS;
+}
+
+export function recordGuess(room: RoomState, playerId: string, value: number): void {
+  room.guesses[playerId] = Math.min(100, Math.max(0, Math.round(value)));
+}
+
+/** Everyone who owes a guess: active players minus the psychic. */
+export function guessers(room: RoomState): Player[] {
+  return activePlayers(room).filter((p) => p.id !== room.psychicId);
+}
+
+// ─── Bluff Definitions ───────────────────────────────────────────────────────
+
+export const WRITING_SECONDS = 90;
+export const BLUFF_VOTE_SECONDS = 75;
+
+export function beginWritingPhase(room: RoomState): void {
+  room.phase = 'writing';
+  room.definitions = {};
+  room.bluffVotes = {};
+  room.bluffOrder = [];
+  room.activePlayerId = null;
+  room.turnTimeLeft = WRITING_SECONDS;
+}
+
+export function recordDefinition(room: RoomState, playerId: string, text: string): void {
+  room.definitions[playerId] = text;
+}
+
+export function allDefinitionsIn(room: RoomState): boolean {
+  const owed = activePlayers(room);
+  return owed.length > 0 && owed.every((p) => room.definitions[p.id] !== undefined);
+}
+
+/**
+ * Freezes the ballot order and opens the vote.
+ *
+ * The order is shuffled once and stored rather than sorted per client: the
+ * true definition must not sit in a predictable slot, and two clients showing
+ * different orders would make "the third one" unsayable in chat.
+ */
+export function beginBluffVote(room: RoomState, realId: string): void {
+  room.phase = 'bluffvote';
+  room.bluffOrder = shuffle([...Object.keys(room.definitions), realId]);
+  room.bluffVotes = {};
+  room.turnTimeLeft = BLUFF_VOTE_SECONDS;
+}
+
+/** Refuses a vote for your own fake — you already know it is not the answer. */
+export function castBluffVote(room: RoomState, voterId: string, optionId: string): boolean {
+  if (room.phase !== 'bluffvote') return false;
+  if (optionId === voterId) return false;
+  if (!room.bluffOrder.includes(optionId)) return false;
+  if (!activePlayers(room).some((p) => p.id === voterId)) return false;
+  room.bluffVotes[voterId] = optionId;
+  return true;
+}
+
+export function allBluffVotesIn(room: RoomState): boolean {
+  const owed = activePlayers(room);
+  return owed.length > 0 && owed.every((p) => room.bluffVotes[p.id] !== undefined);
+}
+
+export function allGuessesIn(room: RoomState): boolean {
+  const owed = guessers(room);
+  return owed.length > 0 && owed.every((p) => room.guesses[p.id] !== undefined);
 }
 
 /**
@@ -465,7 +843,13 @@ export function beginNextGameRound(room: RoomState, accusedId: string | null): v
  */
 export function reformLobby(room: RoomState, keeperId: string): Player[] {
   const dropped = room.players.filter((p) => p.id !== keeperId);
-  room.pastPlayers = dropped;
+  // Simulated players are discarded rather than parked. `pastPlayers` exists
+  // so a real player can click Rejoin and be restored from it; a bot has no
+  // socket and can never click anything, so parking them would just leave
+  // garbage in the room for as long as it lives. The host presses the button
+  // again for the next round, which is right anyway — they may want a
+  // different number of them.
+  room.pastPlayers = dropped.filter((p) => !p.isBot);
   room.players = room.players.filter((p) => p.id === keeperId);
   resetRound(room);
   room.phase = 'lobby';
@@ -511,7 +895,52 @@ export function isAnonymousVote(room: RoomState): boolean {
 }
 
 export const TURN_SECONDS = 10;
+/**
+ * A drawing turn is longer than a typing turn. 10s is plenty to type one word
+ * and not enough to place a considered stroke with a mouse — and unlike a word,
+ * a rushed stroke is unreadable evidence for the rest of the round rather than
+ * just a weak clue.
+ */
+export const DRAW_TURN_SECONDS = 20;
 export const DELIBERATION_SECONDS = 90;
+
+/** How long the current phase gives each player. */
+export function turnSeconds(room: RoomState): number {
+  return room.phase === 'drawing' ? DRAW_TURN_SECONDS : TURN_SECONDS;
+}
+
+/**
+ * The window when there is no word phase to precede it.
+ *
+ * Turning text chat off skips the word round entirely (see `skipsWordPhase`),
+ * which takes away both the evidence board and the minute or so the turns used
+ * to buy. A lobby on voice has to do all of that talking inside the vote
+ * window instead, so the window is longer. Not a setting: it is a consequence
+ * of one, and a host who turned text off has already made the choice.
+ */
+export const DELIBERATION_SECONDS_NO_WORDS = 180;
+
+/**
+ * Text off means no typing at all — including the word phase, which is nothing
+ * but typing. The round goes watch/read straight to the eject vote.
+ *
+ * This is the only reading of the 'none' comms mode that holds together: §4
+ * describes it as "we're already on Discord", and a turn-based typing round in
+ * a lobby that has deliberately turned typing off is a phase nobody can play.
+ *
+ * Fake Artist is exempt, and the distinction is *typing*, not turn-taking. A
+ * drawing turn involves no keyboard, so a text-off lobby can play it exactly as
+ * written — and skipping it would leave a round with no evidence at all to vote
+ * on, which is not a shorter game but a broken one.
+ */
+export function skipsWordPhase(room: RoomState): boolean {
+  return room.settings.chatType === 'none' && !isDrawStyle(room.settings.videoCategory);
+}
+
+/** How long this room's vote window runs, in seconds. */
+export function deliberationSeconds(room: RoomState): number {
+  return skipsWordPhase(room) ? DELIBERATION_SECONDS_NO_WORDS : DELIBERATION_SECONDS;
+}
 
 export function recordWord(room: RoomState, playerId: string, word: GameWord): void {
   room.wordsUsed[playerId] = (room.wordsUsed[playerId] || 0) + 1;
@@ -544,18 +973,35 @@ export function advanceTurn(room: RoomState): boolean {
     return false;
   }
   room.activePlayerId = room.turnOrder[room.turnIndex];
-  room.turnTimeLeft = TURN_SECONDS;
+  room.turnTimeLeft = turnSeconds(room);
   return true;
+}
+
+/**
+ * Records one stroke and counts it against the player's turn allowance.
+ *
+ * Shares `wordsUsed` with the word phase — see beginTurnPhase. The cap is
+ * enforced here rather than at the handler so the bot path and the socket path
+ * cannot disagree about when a player is out of turns.
+ */
+export function recordStroke(room: RoomState, playerId: string, stroke: DrawStroke): void {
+  room.wordsUsed[playerId] = (room.wordsUsed[playerId] || 0) + 1;
+  room.strokes.push(stroke);
 }
 
 // ─── Deliberation & voting (section 8) ───────────────────────────────────────
 
 export function beginDeliberation(room: RoomState): void {
   room.phase = 'deliberation';
+  // A no-op when the word phase ran to its end — advanceTurn already cleared
+  // these. It matters on the text-off path, which reaches deliberation without
+  // any turn ever being taken and must not leave a speaker standing.
+  room.activePlayerId = null;
+  room.turnTimeLeft = 0;
   room.votes = {};
   room.voteRound = 1;
   room.revoteCandidates = null;
-  room.deliberationEndsAt = Date.now() + DELIBERATION_SECONDS * 1000;
+  room.deliberationEndsAt = Date.now() + deliberationSeconds(room) * 1000;
 }
 
 export type VoteRejection = 'not_voting' | 'self' | 'already_voted' | 'not_a_candidate' | 'not_eligible';
@@ -682,5 +1128,5 @@ export function beginRevote(room: RoomState, outcome: Extract<VoteOutcome, { kin
   room.voteRound++;
   room.revoteCandidates = outcome.candidates;
   // A re-vote gets its own fresh window so it cannot expire instantly.
-  room.deliberationEndsAt = Date.now() + DELIBERATION_SECONDS * 1000;
+  room.deliberationEndsAt = Date.now() + deliberationSeconds(room) * 1000;
 }

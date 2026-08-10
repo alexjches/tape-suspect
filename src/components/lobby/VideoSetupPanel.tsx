@@ -7,7 +7,6 @@ import { useState, useEffect } from 'react';
 import { RoomPublic, Preset } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
 import { isValidVideoUrl, parseVideoUrl } from '@/lib/videoParser';
-import { VIDEO_CATEGORIES, CUSTOM_CATEGORY } from '@/lib/videoCategories';
 import { PresetLibrary } from './PresetLibrary';
 
 interface Props {
@@ -24,7 +23,10 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 6,
   color: '#000',
   background: '#fff',
-  fontFamily: 'var(--font-marker)',
+  // The UI face, as every other field in the app takes — a handwriting font is
+  // a poor thing to read a pasted URL back in.
+  fontFamily: 'var(--font-ui)',
+  fontWeight: 600,
   fontSize: '1rem',
   marginTop: 5,
 };
@@ -78,10 +80,10 @@ export function VideoSetupPanel({ room, isHost, actions, code }: Props) {
     setSaveName('');
   }
 
-  const genre = room.settings.videoCategory;
-  const hasRandomVideoCategory = !!genre && genre !== CUSTOM_CATEGORY;
-  const genreName = (genre && VIDEO_CATEGORIES[genre]?.name) || genre;
-
+  // Whether this panel should be on screen at all is CustomContentPanel's
+  // call — it renders this only for a video mode with custom content switched
+  // on. The panel used to make that decision itself, off a `genre !== custom`
+  // test that stopped meaning anything the moment Custom stopped being a genre.
   const heading = (
     <h3
       className="brutal-title"
@@ -91,22 +93,9 @@ export function VideoSetupPanel({ room, isHost, actions, code }: Props) {
     </h3>
   );
 
-  if (hasRandomVideoCategory) {
-    return (
-      <div className="brutal-card yellow" style={{ padding: 16 }}>
-        {heading}
-        <p style={{ fontWeight: 600, fontSize: '0.85rem', marginTop: 8 }}>
-          Two tapes will be pulled at random from the{' '}
-          <span style={{ textTransform: 'uppercase' }}>{genreName}</span> shelf
-          when the deck rolls.
-        </p>
-      </div>
-    );
-  }
-
   if (!isHost) {
     return (
-      <div className="brutal-card yellow" style={{ padding: 16 }}>
+      <div className="brutal-card yellow" style={{ padding: 16, marginTop: 10 }}>
         {heading}
         <div className="osd-menu" style={{ marginTop: 12 }}>
           <div className="osd-menu-row">
@@ -135,7 +124,7 @@ export function VideoSetupPanel({ room, isHost, actions, code }: Props) {
   }
 
   return (
-    <div className="brutal-card yellow" style={{ padding: 16 }}>
+    <div className="brutal-card yellow" style={{ padding: 16, marginTop: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         {heading}
         <button

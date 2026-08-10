@@ -60,7 +60,6 @@ export default function ShopPage() {
     <div className="coin-balance-display">
       <span className="coin-icon">🪙</span>
       <span className="coin-amount">{coins}</span>
-      <span className="coin-label">REWIND COINS</span>
     </div>
   );
 

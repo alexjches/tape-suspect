@@ -8,8 +8,26 @@ import { Server, Socket } from 'socket.io';
 import {
   createRoom,
   getRoom,
+  deleteRoom,
   getPublicRooms,
+  findRoomHostedBy,
   addPlayer,
+  beginDrawPhase,
+  beginCluePhase,
+  beginGuessPhase,
+  beginWritingPhase,
+  beginBluffVote,
+  recordDefinition,
+  allDefinitionsIn,
+  castBluffVote,
+  allBluffVotesIn,
+  recordGuess,
+  guessers,
+  allGuessesIn,
+  CLUE_SECONDS,
+  GUESS_SECONDS,
+  recordStroke,
+  dropStaleSocketRows,
   removePlayer,
   reformLobby,
   restorePlayer,
@@ -30,6 +48,7 @@ import {
   beginNextGameRound,
   pickImposters,
   assignSpectator,
+  usesCustomContent,
   beginWordPhase,
   recordWord,
   playerFinishedTurn,
@@ -41,30 +60,86 @@ import {
   resolveVote,
   beginRevote,
   transferHost,
-  DELIBERATION_SECONDS,
+  removeBots,
+  deliberationSeconds,
+  skipsWordPhase,
   HostTransferRejection,
   VoteOutcome,
   Player,
   RoomSettings,
   RoomState,
 } from './gameState';
-import { CUSTOM_CATEGORY, isKnownCategory } from '../lib/videoCategories';
+import {
+  CUSTOM_CATEGORY,
+  isDrawStyle,
+  isSpectrumStyle,
+  isBluffStyle,
+  isKnownCategory,
+  isPromptStyle,
+} from '../lib/videoCategories';
+import { pickPromptPair } from './promptLibrary';
+import { pickDrawWord } from './drawLibrary';
+import { pickSpectrum, scoreGuess } from './wavelengthLibrary';
+import {
+  pickBluffWord,
+  REAL_DEFINITION_ID,
+  POINTS_PER_FOOL,
+  POINTS_FOR_TRUTH,
+} from './bluffLibrary';
 import { sanitizeCosmetics } from '../lib/cosmetics';
+import { toAvatarCode } from '../lib/avatars';
 import { pickVideoPair, watchUrl } from './videoLibrary';
 import { verifySocketUser } from './socketAuth';
 import { awardCoins } from './wallet';
-import type { CoinReward, GameResults, GameWord } from '../types';
+import {
+  BOTS_ENABLED,
+  makeBot,
+  freshBotRuntime,
+  botLoadDelay,
+  botReadyDelay,
+  botReactGap,
+  botSpeakDelay,
+  botVoteDelay,
+  botWord,
+  botEmoji,
+  botVoteTarget,
+} from './bots';
+import type {
+  CoinReward,
+  DrawStroke,
+  GameAssignment,
+  ScoreLine,
+  GameReaction,
+  GameResults,
+  GameWord,
+  ReactionEmoji,
+} from '../types';
+import { isReactionEmoji } from '../types';
 
 // ── Phase 1 rule constants (docs/BUILD-PLAN.md) ──────────────────────
-// Lobby size 4–10 (section 20). Phase 1 ships a single imposter only
-// (section 16) — 2-imposter lobbies unlock at 7+ players in Phase 2.
-const MIN_PLAYERS = 4;
+// Lobby size 3–10. Phase 1 ships a single imposter only (section 16) —
+// 2-imposter lobbies unlock at 7+ players in Phase 2.
+//
+// The floor is 3, not section 20's 4: an owner decision, recorded in CLAUDE.md
+// rather than left as a silent disagreement with the spec.
+const MIN_PLAYERS = 3;
 const MAX_PLAYERS = 10;
 
 // Section 6: the word phase starts once everyone is ready, or 10s after the
 // imposter's video ends — whichever comes first — so one straggler cannot
 // hold up the lobby.
 const READY_GRACE_SECONDS = 10;
+
+// The same idea for a Words or Questions round, where the card *is* the phase:
+// long enough to think of an answer to a question rather than to finish
+// watching something. Everyone clicking Ready still ends it early.
+const PROMPT_READ_SECONDS = 45;
+
+// Longest a host-written prompt card may be. Words are capped at 30 because a
+// word is a word; a card can be a whole question, so it gets room — but it
+// still has to be one card on one screen at one size, since a card that
+// overflows for the crew and not for the suspect would be a role tell.
+const MAX_PROMPT_LENGTH = 120;
 
 // Reward values are confirmed, not placeholders (section 9):
 //   crew win 50+25=75 / crew lose 50 / imposter win 50+50=100 / imposter lose 50
@@ -85,6 +160,13 @@ const TWO_IMPOSTER_MIN_PLAYERS = 7;
 // a lift ride; short enough that a lobby isn't held open by a ghost.
 const DISCONNECT_GRACE_SECONDS = 60;
 
+// Minimum gap between one player's reactions (§5). Reactions are broadcast
+// to everyone and animate on top of the video, so an unthrottled sender can
+// paper over the picture for the whole room — the one phase where nobody can
+// look away. Loose enough that deliberate double-tapping still reads as two
+// reactions, tight enough that holding the button is not a screen wipe.
+const REACTION_MIN_INTERVAL_MS = 500;
+
 /**
  * The durable player id behind a socket, set on create/join.
  *
@@ -101,14 +183,20 @@ function actorId(socket: Socket): string {
  * back to `socket.id`, which is what the room used to key on anyway.
  */
 function durableId(supplied: unknown, socket: Socket): string {
-  if (typeof supplied !== 'string') return socket.id;
-  const trimmed = supplied.trim().slice(0, 64);
-  return trimmed || socket.id;
+  const trimmed = typeof supplied === 'string' ? supplied.trim().slice(0, 64) : '';
+  if (trimmed) return trimmed;
+  // Loud on purpose. Every client path sends this; a fallback means one of them
+  // has stopped, and the room is about to key a player on a value that changes
+  // on the next reconnect. It shipped silently once — see dropStaleSocketRows.
+  console.warn(`[Room] join/create with no player id from ${socket.id} — falling back to socket id`);
+  return socket.id;
 }
 
 function sanitizeRoom(room: RoomState) {
-  // Never send video URLs or roles to clients. URLs go out individually in
-  // game:assigned; roles are revealed only in game:results (section 3).
+  // Never send video URLs, word/question pairs or roles to clients. Each
+  // player's own half goes out individually in game:assigned; roles are
+  // revealed only in game:results (section 3). This object is built field by
+  // field rather than spread, which is what keeps that true by default.
   return {
     code: room.code,
     hostId: room.hostId,
@@ -117,9 +205,15 @@ function sanitizeRoom(room: RoomState) {
     gameRound: room.gameRound,
     totalRounds: totalGameRounds(room),
     accusedIds: room.accusedIds,
-    // Not secret — it's whoever typed the Custom URLs, and the lobby needs to
-    // say who will be sitting out before anyone hits start (section 4).
-    customVideoAuthorId: room.customVideoAuthorId,
+    // Not secret — it's whoever typed the custom content, and the lobby needs
+    // to say who will be sitting out before anyone hits start (section 4).
+    customContentAuthorId: room.customContentAuthorId,
+    // The public half of Wavelength. The scale has to be visible to everyone
+    // — it is what they are guessing on — while `spectrumTarget` and
+    // `psychicId` stay off this object entirely. That split IS the mode's
+    // secrecy surface, so keep the two apart when editing.
+    spectrum: room.spectrum,
+    psychicClue: room.psychicClue,
     players: room.players.map((p) => ({
       id: p.id,
       name: p.name,
@@ -128,24 +222,36 @@ function sanitizeRoom(room: RoomState) {
       isReady: p.isReady,
       isSpectator: p.isSpectator,
       status: p.status,
+      // Deliberately published — see PlayerPublic.isBot. Note this picks
+      // fields one by one, which is what keeps `p.bot` (the scheduling
+      // runtime) and `p.lastReactionAt` server-side without extra effort.
+      isBot: p.isBot ?? false,
       cosmetics: p.cosmetics,
     })),
     settings: {
       isPublic: room.settings.isPublic,
       maxPlayers: room.settings.maxPlayers,
+      // Which pot the round is drawn from is public; what is *in* it is not.
+      useCustomContent: room.settings.useCustomContent,
       // Deliberately exclude video URLs from broadcast
       hasNormalVideo: !!room.settings.normalVideoUrl,
       hasImposterVideo: !!room.settings.imposterVideoUrl,
+      // …and the custom prompt cards for exactly the same reason. The lobby
+      // needs to know whether the pair is loaded, never what it says.
+      hasNormalPrompt: !!room.settings.customNormalPrompt,
+      hasImposterPrompt: !!room.settings.customImposterPrompt,
       wordsPerPlayer: room.settings.wordsPerPlayer,
       imposterCount: room.settings.imposterCount,
       chatType: room.settings.chatType,
       voteVisibility: room.settings.voteVisibility,
+      themeHint: room.settings.themeHint,
       videoCategory: room.settings.videoCategory,
     },
     // Individual ballots. An anonymous lobby never publishes them — not
     // during the vote and not after it, since §4 promises only the final
     // tally is revealed, and this object is who-voted-for-whom.
     votes: isAnonymousVote(room) ? {} : room.votes,
+    botsAllowed: BOTS_ENABLED,
     createdAt: room.createdAt,
   };
 }
@@ -171,6 +277,236 @@ function setRoomTimer(code: string, fn: () => void, ms = 1000) {
 // Separate from roomTimers on purpose: those are the one-per-room phase clocks
 // and phases are sequential, whereas several players can be inside their grace
 // window at once. Keyed `code:playerId`.
+
+// ── Bot driver ───────────────────────────────────────────────────────────
+//
+// Its own map, for the same reason `dropTimers` has one: `roomTimers` is a
+// single slot per room that every phase reuses, so a bot ticker parked there
+// would clobber the turn clock or the deliberation countdown. One interval
+// per room with bots in it, holding all of them.
+//
+// The tick reads the room fresh each time and acts on the current phase, so
+// it cannot corrupt a phase that has already moved on — the same discipline
+// the phase timers use.
+const botTimers = new Map<string, NodeJS.Timeout>();
+
+const BOT_TICK_MS = 400;
+
+function startBotTicker(code: string, io: Server) {
+  if (botTimers.has(code)) return;
+  const handle = setInterval(() => runBotTick(code, io), BOT_TICK_MS);
+  botTimers.set(code, handle);
+}
+
+function clearBotTicker(code: string) {
+  const handle = botTimers.get(code);
+  if (handle) {
+    clearInterval(handle);
+    botTimers.delete(code);
+  }
+}
+
+/**
+ * One pass of bot behaviour for a room.
+ *
+ * Every branch goes through the same mutator and broadcast helper the real
+ * socket handler for that action uses — `setPlayerReady` + the readyCount
+ * emit, `recordWord` + `nextTurn`, `castVote` + `broadcastTally`. That is
+ * the whole design constraint: a bot must not be able to reach a state a
+ * player could not, or the round it fills is not the round being tested.
+ */
+function runBotTick(code: string, io: Server) {
+  const room = getRoom(code);
+  if (!room) {
+    clearBotTicker(code);
+    return;
+  }
+
+  const bots = room.players.filter((p) => p.isBot);
+  if (bots.length === 0) {
+    clearBotTicker(code);
+    return;
+  }
+
+  const now = Date.now();
+
+  switch (room.phase) {
+    case 'playing': {
+      // ── A prompt round has no tape to buffer, no synchronised start and
+      //    nothing to react to, so all of the machinery below is skipped and
+      //    a bot only has to stop blocking the Ready Check.
+      if (isPromptStyle(room.settings.videoCategory)) {
+        let readied = false;
+        for (const bot of bots) {
+          if (bot.isSpectator) continue;
+          if (!bot.bot) bot.bot = freshBotRuntime();
+          if (room.readyToAdvance[bot.id]) continue;
+          if (bot.bot.readyAt === 0) {
+            bot.bot.readyAt = now + botReadyDelay();
+            continue;
+          }
+          if (now >= bot.bot.readyAt) {
+            markReadyToAdvance(room, bot.id);
+            readied = true;
+          }
+        }
+        if (readied) {
+          broadcastReadyState(room, io);
+          if (allReadyToAdvance(room)) startWordPhase(room, io);
+        }
+        return;
+      }
+
+      // ── Load. Bots report their tape buffered so the synchronised start
+      //    is not held up by players who have nothing to buffer.
+      let loadedSomething = false;
+      for (const bot of bots) {
+        if (bot.isReady || bot.isSpectator) continue;
+        if (!bot.bot) bot.bot = freshBotRuntime();
+        if (bot.bot.readyAt === 0) {
+          bot.bot.readyAt = now + botLoadDelay();
+          continue;
+        }
+        if (now >= bot.bot.readyAt) {
+          setPlayerReady(code, bot.id);
+          // Re-purpose the slot for the Ready click, which is a later beat.
+          bot.bot.readyAt = now + botReadyDelay();
+          loadedSomething = true;
+        }
+      }
+
+      if (loadedSomething) {
+        const watchers = activePlayers(room);
+        io.to(code).emit('game:readyCount', {
+          ready: watchers.filter((p) => p.isReady).length,
+          total: watchers.length,
+        });
+        if (room.playAt === null && allPlayersReady(room)) {
+          const playTimestamp = now + 1000;
+          room.playAt = playTimestamp;
+          io.to(code).emit('game:play', { playAt: playTimestamp });
+          console.log(`[Bots] ${code}: all loaded, playing at ${playTimestamp}`);
+        }
+      }
+
+      // Nothing below happens until the tape is actually rolling.
+      if (room.playAt === null || now < room.playAt) return;
+
+      // ── React (§5). The requested behaviour, and the reason a bot lobby
+      //    is worth watching: the corner fills up while the tape plays.
+      for (const bot of bots) {
+        if (bot.isSpectator || !bot.bot) continue;
+        if (bot.bot.nextReactAt === 0) {
+          bot.bot.nextReactAt = now + botReactGap();
+          continue;
+        }
+        if (now >= bot.bot.nextReactAt) {
+          broadcastReaction(room, bot, botEmoji(), io);
+          bot.bot.nextReactAt = now + botReactGap();
+        }
+      }
+
+      // ── Ready. Bots never report `game:videoEnded` — see botReadyDelay()
+      //    for why that would cut a human's video short. Clicking Ready is
+      //    enough to stop them blocking, and leaves the pacing to the human.
+      let clicked = false;
+      for (const bot of bots) {
+        if (bot.isSpectator || !bot.bot) continue;
+        if (room.readyToAdvance[bot.id]) continue;
+        if (bot.isReady && now >= bot.bot.readyAt) {
+          markReadyToAdvance(room, bot.id);
+          clicked = true;
+        }
+      }
+      if (clicked) {
+        broadcastReadyState(room, io);
+        if (allReadyToAdvance(room)) startWordPhase(room, io);
+      }
+      return;
+    }
+
+    case 'words': {
+      const speaker = room.activePlayerId;
+      if (!speaker) return;
+      const bot = bots.find((p) => p.id === speaker);
+      if (!bot || !bot.bot) return;
+      if (playerFinishedTurn(room, speaker)) return;
+
+      if (bot.bot.speakAt === 0) {
+        bot.bot.speakAt = now + botSpeakDelay();
+        return;
+      }
+      if (now < bot.bot.speakAt) return;
+      bot.bot.speakAt = 0;
+
+      const entry: GameWord = {
+        playerId: bot.id,
+        playerName: bot.name,
+        avatar: bot.avatar,
+        word: botWord(),
+        wordIndex: (room.wordsUsed[bot.id] || 0) + 1,
+        timestamp: now,
+      };
+      recordWord(room, bot.id, entry);
+      io.to(code).emit('game:word', entry);
+
+      if (playerFinishedTurn(room, bot.id)) nextTurn(room, io);
+      else broadcastTurnState(room, io);
+      return;
+    }
+
+    case 'deliberation': {
+      let voted = false;
+      // A re-vote restricts the ballot to the tied players (§8); outside one,
+      // anyone still in the game is fair game.
+      const candidates =
+        room.revoteCandidates ?? activePlayers(room).map((p) => p.id);
+
+      for (const bot of bots) {
+        if (!bot.bot) continue;
+        if (room.votes[bot.id]) continue;
+        if (!activePlayers(room).some((p) => p.id === bot.id)) continue;
+
+        if (bot.bot.voteAt === 0) {
+          bot.bot.voteAt = now + botVoteDelay();
+          continue;
+        }
+        if (now < bot.bot.voteAt) continue;
+
+        const target = botVoteTarget(candidates, bot.id, room.votes);
+        if (!target) continue;
+        // Through castVote, so every eligibility rule that applies to a
+        // player applies here — including the ones a re-vote adds.
+        if (castVote(room, bot.id, target).ok) {
+          voted = true;
+          // Re-arm rather than leaving a past deadline behind: on a tie the
+          // swing voters' ballots are cleared and they vote again, and a
+          // stale deadline would make all of them recast in the same tick
+          // with nothing on the board to bandwagon onto.
+          bot.bot.voteAt = 0;
+        }
+      }
+
+      if (voted) {
+        broadcastTally(room, io);
+        if (pendingVoters(room).length === 0) concludeVote(room, io);
+      }
+      return;
+    }
+
+    default:
+      // Lobby and results: bots idle. Their per-round scheduling is reset by
+      // whatever starts the next round, not here.
+      return;
+  }
+}
+
+/** Wipes per-round bot scheduling so a second round does not inherit it. */
+function resetBotRuntimes(room: RoomState) {
+  for (const player of room.players) {
+    if (player.isBot) player.bot = freshBotRuntime();
+  }
+}
 
 const dropTimers = new Map<string, NodeJS.Timeout>();
 
@@ -207,12 +543,64 @@ function broadcastReadyState(room: RoomState, io: Server) {
     ready: active.filter((p) => room.readyToAdvance[p.id]).length,
     total: active.length,
     graceEndsAt: room.imposterVideoEndedAt
-      ? room.imposterVideoEndedAt + READY_GRACE_SECONDS * 1000
+      ? room.imposterVideoEndedAt + readyGraceSeconds(room) * 1000
       : null,
   });
 }
 
-/** Starts the 10s countdown that begins once the imposter's video ends. */
+/**
+ * Publishes one reaction to the room (§5), throttle included.
+ *
+ * Shared by the `game:react` handler and the bot driver so the two cannot
+ * drift: a simulated reaction is byte-identical to a real one, which is the
+ * only way testing with bots says anything about the real thing. Returns
+ * whether it went out — the throttle is the usual reason it does not.
+ */
+function broadcastReaction(
+  room: RoomState,
+  player: Player,
+  emoji: ReactionEmoji,
+  io: Server
+): boolean {
+  const now = Date.now();
+  if (player.lastReactionAt && now - player.lastReactionAt < REACTION_MIN_INTERVAL_MS) {
+    return false;
+  }
+  player.lastReactionAt = now;
+
+  const reaction: GameReaction = {
+    playerId: player.id,
+    playerName: player.name,
+    emoji,
+    timestamp: now,
+    // Two reactions can share a millisecond across players; the client keys
+    // its floating animations off this.
+    id: `${player.id}-${now}-${Math.random().toString(36).slice(2, 7)}`,
+  };
+
+  // Back to the sender too, deliberately: everyone sees the same set of
+  // reactions float, so what you sent looks to you exactly like what it
+  // looks like to the room.
+  io.to(room.code).emit('game:reaction', reaction);
+  return true;
+}
+
+/**
+ * How long the room waits on stragglers before advancing itself.
+ *
+ * A video round measures this from the imposter's tape ending, so 10s is a
+ * nudge for someone who has already watched the whole thing. A prompt round
+ * has no tape: the clock starts the moment the card appears and the read *is*
+ * the phase, so it has to be long enough to think of an answer to a question.
+ * Everyone clicking Ready still ends it early, which is the normal case.
+ */
+function readyGraceSeconds(room: RoomState): number {
+  return isPromptStyle(room.settings.videoCategory)
+    ? PROMPT_READ_SECONDS
+    : READY_GRACE_SECONDS;
+}
+
+/** Starts the countdown that ends the watch/read phase on its own. */
 function startReadyGrace(room: RoomState, io: Server) {
   setRoomTimer(room.code, () => {
     const current = getRoom(room.code);
@@ -220,17 +608,100 @@ function startReadyGrace(room: RoomState, io: Server) {
       clearRoomTimer(room.code);
       return;
     }
-    const deadline = (current.imposterVideoEndedAt ?? 0) + READY_GRACE_SECONDS * 1000;
+    const deadline =
+      (current.imposterVideoEndedAt ?? 0) + readyGraceSeconds(current) * 1000;
     if (Date.now() >= deadline) {
       startWordPhase(current, io);
     }
   });
 }
 
+/**
+ * One player's half of the round, and nothing else.
+ *
+ * The single place either half of a pair is allowed to leave the server, so
+ * the secrecy invariant is one function wide. Crew and suspect get an
+ * identical shape — no role flag, no hint of which half this is (section 3).
+ */
+/** Points per stroke. Generous for a drawn curve, short of a denial-of-canvas. */
+const STROKE_MAX_POINTS = 400;
+
+/**
+ * A stable colour per player for the shared canvas.
+ *
+ * Derived from their seat in `turnOrder` rather than stored, so it survives a
+ * reconnect without another field to keep in step, and every client that
+ * replays `room.strokes` paints them the same. Being able to read who drew
+ * what is the point: an out-of-place stroke is only evidence if you can say
+ * whose it was.
+ *
+ * Carries no role information — the fake's colour is drawn from the same list
+ * in the same way.
+ */
+const STROKE_COLOURS = [
+  '#012442', '#E02D5C', '#1A5FAA', '#3EC63E', '#F7C434',
+  '#9D6EFF', '#F29B3B', '#00C9FF', '#E44FA0', '#2ECC56',
+];
+
+function strokeColour(room: RoomState, playerId: string): string {
+  const seat = room.turnOrder.indexOf(playerId);
+  const index = seat >= 0 ? seat : room.players.findIndex((p) => p.id === playerId);
+  return STROKE_COLOURS[Math.max(0, index) % STROKE_COLOURS.length];
+}
+
+function assignmentFor(room: RoomState, playerId: string): GameAssignment {
+  const isImposter = room.imposterIds.includes(playerId);
+
+  // Fake Artist is the one mode that tells a player their own role — see the
+  // note on GameAssignment.isFake. The crew get the word and no theme; the fake
+  // gets the theme (when the setting is on) and never the word. Handing the
+  // crew the theme as well would tell them how much the fake knows, which is
+  // the difficulty dial the host just set.
+  if (room.drawWord) {
+    if (isImposter) {
+      return {
+        isFake: true,
+        ...(room.settings.themeHint ? { themeHint: room.drawWord.theme } : {}),
+      };
+    }
+    return { drawWord: room.drawWord.word };
+  }
+
+  // Wavelength: the spectrum is public and rides room:updated. The only thing
+  // dealt privately is the target, and only to the psychic — everyone else's
+  // assignment is deliberately empty rather than absent, so the two shapes stay
+  // indistinguishable in the network tab.
+  if (room.spectrum) {
+    return playerId === room.psychicId
+      ? { isPsychic: true, target: room.spectrumTarget ?? 50 }
+      : {};
+  }
+
+  if (room.prompts) {
+    return { prompt: isImposter ? room.prompts.imposter : room.prompts.normal };
+  }
+  return {
+    videoUrl: isImposter ? room.settings.imposterVideoUrl : room.settings.normalVideoUrl,
+  };
+}
+
 // ─── Word phase (section 7) ──────────────────────────────────────────────────
 
+/**
+ * Leaves the watch/read phase for whatever comes next.
+ *
+ * Normally that is the word phase. With text chat off there is no word phase
+ * at all — it is a turn-based typing round, and this lobby has turned typing
+ * off — so the round goes straight to the eject vote on a longer clock. Every
+ * caller that used to reach for startWordPhase goes through here, including
+ * round 2 of a 2-imposter game.
+ */
 function startWordPhase(room: RoomState, io: Server) {
   clearRoomTimer(room.code);
+  if (skipsWordPhase(room)) {
+    startDeliberation(room, io);
+    return;
+  }
   beginWordPhase(room);
   emitWordPhaseStart(room, io);
 }
@@ -253,10 +724,161 @@ function emitWordPhaseStart(room: RoomState, io: Server) {
   else startDeliberation(room, io);
 }
 
-function startTurnTimer(room: RoomState, io: Server) {
+// ─── Wavelength phases ──────────────────────────────────────────────────────
+// Both phases run on the single per-room timer slot, like every other phase.
+// A clue that never arrives ends the round rather than hanging the lobby: the
+// psychic dropping out is the one failure this mode cannot route around, since
+// nobody else can see the target.
+
+function emitCluePhaseStart(room: RoomState, io: Server) {
+  io.to(room.code).emit('game:cluePhaseStart', {
+    ...sanitizeRoom(room),
+    psychicId: room.psychicId,
+    secondsLeft: room.turnTimeLeft,
+  });
   setRoomTimer(room.code, () => {
     const current = getRoom(room.code);
-    if (!current || current.phase !== 'words') {
+    if (!current || current.phase !== 'clue') {
+      clearRoomTimer(room.code);
+      return;
+    }
+    current.turnTimeLeft--;
+    if (current.turnTimeLeft <= 0) {
+      // No clue means no round. Score it out at zero rather than opening a
+      // guess phase on an empty prompt.
+      beginGuessPhase(current, '(no clue given)');
+      finalizeSpectrumResults(current, io);
+      return;
+    }
+    io.to(room.code).emit('game:clueTick', { secondsLeft: current.turnTimeLeft });
+  });
+}
+
+function emitGuessPhaseStart(room: RoomState, io: Server) {
+  io.to(room.code).emit('game:guessPhaseStart', {
+    ...sanitizeRoom(room),
+    clue: room.psychicClue,
+    secondsLeft: room.turnTimeLeft,
+    totalGuessers: guessers(room).length,
+  });
+  setRoomTimer(room.code, () => {
+    const current = getRoom(room.code);
+    if (!current || current.phase !== 'guessing') {
+      clearRoomTimer(room.code);
+      return;
+    }
+    current.turnTimeLeft--;
+    if (current.turnTimeLeft <= 0) {
+      finalizeSpectrumResults(current, io);
+      return;
+    }
+    io.to(room.code).emit('game:guessTick', {
+      secondsLeft: current.turnTimeLeft,
+      guessesIn: Object.keys(current.guesses).length,
+      totalGuessers: guessers(current).length,
+    });
+  });
+}
+
+// ─── Bluff Definitions phases ───────────────────────────────────────────────
+
+function emitWritingPhaseStart(room: RoomState, io: Server) {
+  io.to(room.code).emit('game:writingPhaseStart', {
+    ...sanitizeRoom(room),
+    word: room.bluffWord?.word ?? '',
+    secondsLeft: room.turnTimeLeft,
+    totalWriters: activePlayers(room).length,
+  });
+  setRoomTimer(room.code, () => {
+    const current = getRoom(room.code);
+    if (!current || current.phase !== 'writing') {
+      clearRoomTimer(room.code);
+      return;
+    }
+    current.turnTimeLeft--;
+    if (current.turnTimeLeft <= 0) {
+      startBluffVote(current, io);
+      return;
+    }
+    io.to(room.code).emit('game:writingTick', {
+      secondsLeft: current.turnTimeLeft,
+      writtenIn: Object.keys(current.definitions).length,
+      totalWriters: activePlayers(current).length,
+    });
+  });
+}
+
+/**
+ * Opens the ballot.
+ *
+ * The options carry text and an id and **no author** — that mapping is the
+ * game, and it is attached only in the results payload. The id doubles as the
+ * author's player id, which is what lets a player be refused a vote for their
+ * own fake without the client having to be told whose is whose.
+ */
+function startBluffVote(room: RoomState, io: Server) {
+  clearRoomTimer(room.code);
+  // Anyone who never submitted is skipped rather than given a blank option:
+  // an empty entry on the ballot is obviously not the real definition, so it
+  // would narrow the field for free.
+  beginBluffVote(room, REAL_DEFINITION_ID);
+  const options = room.bluffOrder.map((id) => ({
+    id,
+    text: id === REAL_DEFINITION_ID ? (room.bluffWord?.definition ?? '') : room.definitions[id],
+  }));
+  io.to(room.code).emit('game:bluffVoteStart', {
+    ...sanitizeRoom(room),
+    word: room.bluffWord?.word ?? '',
+    options,
+    secondsLeft: room.turnTimeLeft,
+    totalVoters: activePlayers(room).length,
+  });
+  setRoomTimer(room.code, () => {
+    const current = getRoom(room.code);
+    if (!current || current.phase !== 'bluffvote') {
+      clearRoomTimer(room.code);
+      return;
+    }
+    current.turnTimeLeft--;
+    if (current.turnTimeLeft <= 0) {
+      finalizeBluffResults(current, io);
+      return;
+    }
+    io.to(room.code).emit('game:bluffVoteTick', {
+      secondsLeft: current.turnTimeLeft,
+      votesIn: Object.keys(current.bluffVotes).length,
+      totalVoters: activePlayers(current).length,
+    });
+  });
+}
+
+/**
+ * Its own event rather than a flag on `game:wordPhaseStart`, because the two
+ * phases put entirely different screens up and `useRoom` has to know which
+ * without inspecting the mode. The payload is otherwise identical — the turn
+ * engine underneath is the same one.
+ */
+function emitDrawPhaseStart(room: RoomState, io: Server) {
+  io.to(room.code).emit('game:drawPhaseStart', {
+    ...sanitizeRoom(room),
+    turnOrder: room.turnOrder,
+    activePlayerId: room.activePlayerId,
+    turnTimeLeft: room.turnTimeLeft,
+    strokesPerPlayer: room.settings.wordsPerPlayer,
+  });
+
+  if (room.activePlayerId) startTurnTimer(room, io);
+  else startDeliberation(room, io);
+}
+
+function startTurnTimer(room: RoomState, io: Server) {
+  // Both turn-taking phases run on this timer. The guard has to accept either,
+  // or a drawing turn's first tick sees phase !== 'words', clears itself, and
+  // the round sits on player one forever.
+  const phase = room.phase;
+  setRoomTimer(room.code, () => {
+    const current = getRoom(room.code);
+    if (!current || current.phase !== phase) {
       clearRoomTimer(room.code);
       return;
     }
@@ -298,7 +920,7 @@ function startDeliberation(room: RoomState, io: Server) {
   io.to(room.code).emit('game:deliberationStart', {
     ...sanitizeRoom(room),
     endsAt: room.deliberationEndsAt,
-    durationSeconds: DELIBERATION_SECONDS,
+    durationSeconds: deliberationSeconds(room),
     voteRound: room.voteRound,
     revoteCandidates: room.revoteCandidates,
   });
@@ -366,7 +988,11 @@ function concludeVote(room: RoomState, io: Server) {
     console.log(
       `[Game] ${room.code} round ${room.gameRound}/${totalGameRounds(room)} — accused so far: ${room.accusedIds.join(', ') || 'nobody'}`
     );
-    emitWordPhaseStart(room, io);
+    // Round 2 skips the word phase on the same rule as round 1 — otherwise a
+    // text-off lobby would get no words in round 1 and a full turn order in
+    // round 2, which is the worst of both.
+    if (skipsWordPhase(room)) startDeliberation(room, io);
+    else emitWordPhaseStart(room, io);
     return;
   }
 
@@ -416,7 +1042,7 @@ function announceRevote(
     candidates: outcome.candidates,
     voteRound: room.voteRound,
     endsAt: room.deliberationEndsAt,
-    durationSeconds: DELIBERATION_SECONDS,
+    durationSeconds: deliberationSeconds(room),
   };
 
   if (!isAnonymousVote(room)) {
@@ -464,18 +1090,63 @@ function scheduleDrop(code: string, playerId: string, io: Server) {
   dropTimers.set(dropKey(code, playerId), timer);
 }
 
-/** The grace window expired: take the player out for good. */
-function finalizeDrop(room: RoomState, playerId: string, io: Server) {
+/**
+ * Every timer that could still fire at a room, stopped.
+ *
+ * Three separate maps by design — the phase timer is one slot per room, drops
+ * are one per player inside their grace window, and the bot ticker is its own
+ * because the phase machine already owns the first. A room that goes away has
+ * to clear all three or intervals tick against state that no longer exists.
+ */
+function stopRoomTicking(code: string) {
+  clearRoomTimer(code);
+  clearRoomDrops(code);
+  clearBotTicker(code);
+}
+
+/**
+ * Shuts a lobby down under everyone in it.
+ *
+ * Reuses `room:kicked` rather than adding an event: the client already maps it
+ * to `isKicked` and routes those players back to /dashboard, which is exactly
+ * where a closed lobby should leave them. `exceptSocketId` spares the socket
+ * that asked for the closure — it is on its way somewhere else already.
+ */
+function closeRoom(room: RoomState, io: Server, reason: string, exceptSocketId?: string) {
+  const code = room.code;
+  for (const player of room.players) {
+    // Emitting to player.id addresses nothing — a player is a browser, the
+    // socket is the transport. See CLAUDE.md.
+    if (!player.socketId || player.socketId === exceptSocketId) continue;
+    const target = io.sockets.sockets.get(player.socketId);
+    if (!target) continue;
+    target.emit('room:kicked', { reason });
+    target.leave(code);
+  }
+  stopRoomTicking(code);
+  deleteRoom(code);
+  io.emit('rooms:updated', getPublicRooms().map(sanitizeRoom));
+}
+
+/**
+ * Takes a player out of a room for good and repairs whatever they were part of.
+ *
+ * Two callers, and the difference between them is only how they got here: the
+ * grace window expiring on a dropped socket, and someone pressing LEAVE. The
+ * room does not care which — in both cases the seat is now empty.
+ */
+function finalizeDrop(room: RoomState, playerId: string, io: Server, note = 'did not return to') {
   const code = room.code;
   const turnIndex = room.turnOrder.indexOf(playerId);
 
   const updatedRoom = removePlayer(code, playerId);
   if (!updatedRoom) {
     // That was the last one — the room is gone, so nothing may keep ticking.
-    clearRoomTimer(code);
-    clearRoomDrops(code);
+    // Includes the bot-only case: removePlayer drops simulated players once
+    // the last human goes, precisely so this branch is reached.
+    stopRoomTicking(code);
     io.emit('rooms:updated', getPublicRooms().map(sanitizeRoom));
-    console.log(`[Socket] ${playerId} gave up on ${code} (room closed)`);
+    console.log(`[Socket] ${playerId} left ${code} empty (room closed)`);
     return;
   }
 
@@ -488,7 +1159,7 @@ function finalizeDrop(room: RoomState, playerId: string, io: Server) {
   io.to(code).emit('room:updated', sanitizeRoom(updatedRoom));
   if (updatedRoom.phase === 'words') broadcastTurnState(updatedRoom, io);
   io.emit('rooms:updated', getPublicRooms().map(sanitizeRoom));
-  console.log(`[Socket] ${playerId} did not return to ${code} — removed`);
+  console.log(`[Socket] ${playerId} ${note} ${code} — removed`);
 }
 
 /**
@@ -504,13 +1175,34 @@ function sendCatchUp(room: RoomState, playerId: string, socket: Socket, io: Serv
   if (!player) return;
 
   if (room.phase === 'playing') {
-    if (!player.isSpectator) {
-      const isImposter = room.imposterIds.includes(playerId);
-      socket.emit('game:assigned', {
-        videoUrl: isImposter ? room.settings.imposterVideoUrl : room.settings.normalVideoUrl,
-      });
-    }
+    // Same one-half-only rule as the live deal — a reconnect must not be a
+    // way to see the other card.
+    if (!player.isSpectator) socket.emit('game:assigned', assignmentFor(room, playerId));
     broadcastReadyState(room, io);
+    return;
+  }
+
+  // A drawing round replays the card and the whole canvas. Both are needed:
+  // the card because it is on screen for the entire phase, and the strokes
+  // because the picture *is* the evidence — coming back to a blank canvas is
+  // worse than not coming back. `assignmentFor` is still the only way either
+  // half leaves the server, so a reconnect is not a way to see the other one.
+  if (room.phase === 'drawing') {
+    socket.emit('game:assigned', assignmentFor(room, playerId));
+    socket.emit('game:drawPhaseStart', {
+      ...sanitizeRoom(room),
+      turnOrder: room.turnOrder,
+      activePlayerId: room.activePlayerId,
+      turnTimeLeft: room.turnTimeLeft,
+      strokesPerPlayer: room.settings.wordsPerPlayer,
+    });
+    socket.emit('game:strokeHistory', { strokes: room.strokes });
+    socket.emit('game:turnState', {
+      activePlayerId: room.activePlayerId,
+      turnTimeLeft: room.turnTimeLeft,
+      turnIndex: room.turnIndex,
+      wordsUsed: room.wordsUsed,
+    });
     return;
   }
 
@@ -533,10 +1225,16 @@ function sendCatchUp(room: RoomState, playerId: string, socket: Socket, io: Serv
   }
 
   if (room.phase === 'deliberation') {
+    // On a drawing round the picture is what deliberation argues over, exactly
+    // as the words are on a word round. It has to come back with them.
+    if (room.drawWord) {
+      socket.emit('game:assigned', assignmentFor(room, playerId));
+      socket.emit('game:strokeHistory', { strokes: room.strokes });
+    }
     socket.emit('game:deliberationStart', {
       ...sanitizeRoom(room),
       endsAt: room.deliberationEndsAt,
-      durationSeconds: DELIBERATION_SECONDS,
+      durationSeconds: deliberationSeconds(room),
       voteRound: room.voteRound,
       revoteCandidates: room.revoteCandidates,
     });
@@ -553,7 +1251,7 @@ function sendCatchUp(room: RoomState, playerId: string, socket: Socket, io: Serv
         canRecast: anonymous ? stillToRecast.includes(playerId) : null,
         voteRound: room.voteRound,
         endsAt: room.deliberationEndsAt,
-        durationSeconds: DELIBERATION_SECONDS,
+        durationSeconds: deliberationSeconds(room),
         tally: anonymous ? null : getVoteTally(room),
       });
     }
@@ -602,21 +1300,39 @@ export function registerSocketHandlers(io: Server) {
           maxPlayers?: number;
           chatType?: RoomSettings['chatType'];
           voteVisibility?: RoomSettings['voteVisibility'];
+          themeHint?: boolean;
           videoCategory?: string | null;
         },
         callback: (res: { success: boolean; code?: string; error?: string }) => void
       ) => {
         const code = generateRoomCode();
         const playerId = durableId(data.playerId, socket);
+        const userId = (socket.data.userId as string | null) ?? null;
+
+        // One open lobby per host. Pressing HOST while you already have one
+        // means you got here from a second window — the first is superseded
+        // rather than left running, which is also what stops a stale lobby
+        // blocking the new one. Note socket.data.userId is filled in by an
+        // async verify: if it has not landed, this falls through to the
+        // player-id branch, which can only ever scope the rule more narrowly.
+        const existing = findRoomHostedBy(userId, playerId);
+        if (existing) {
+          console.log(`[Room] ${existing.code} closed — its host opened ${code}`);
+          closeRoom(existing, io, 'The host opened a new lobby', socket.id);
+        }
 
         const host: Player = {
           id: playerId,
           socketId: socket.id,
           // Verified from the session cookie, never from data.userId — this
           // is what the round's coins get credited to.
-          userId: (socket.data.userId as string | null) ?? null,
+          userId,
           name: data.playerName,
-          avatar: data.avatar,
+          // An avatar is a character code now, so it gets vetted at the
+          // boundary like every other client-supplied field. Anything that
+          // isn't one — including the emoji older clients still send —
+          // resolves to a stable character rather than being rejected.
+          avatar: toAvatarCode(data.avatar),
           cosmetics: sanitizeCosmetics(data.cosmetics),
           isHost: true,
           isReady: false,
@@ -626,8 +1342,14 @@ export function registerSocketHandlers(io: Server) {
 
         const settings: RoomSettings = {
           isPublic: data.isPublic,
+          // A new lobby always starts on the pool. Custom is a deliberate
+          // choice made in front of the roster, where the lobby can see who is
+          // about to sit out — not something a room can be born holding.
+          useCustomContent: !!data.normalVideoUrl || !!data.imposterVideoUrl,
           normalVideoUrl: data.normalVideoUrl || '',
           imposterVideoUrl: data.imposterVideoUrl || '',
+          customNormalPrompt: '',
+          customImposterPrompt: '',
           maxPlayers: Math.max(MIN_PLAYERS, Math.min(MAX_PLAYERS, data.maxPlayers ?? MAX_PLAYERS)),
           wordsPerPlayer: data.wordsPerPlayer ?? 1,
           // Always starts at 1: a brand-new lobby has one player in it, and
@@ -638,6 +1360,9 @@ export function registerSocketHandlers(io: Server) {
           // Public by default — the live ballot is the livelier game, and a
           // host who wants the quieter one picks it deliberately (§4).
           voteVisibility: data.voteVisibility === 'anonymous' ? 'anonymous' : 'public',
+          // Fake Artist default: hint ON. Drawing blind is the harder variant
+          // and a lobby should not meet it without choosing it.
+          themeHint: data.themeHint !== false,
           // An unrecognised genre falls back to null, which means "host supplies
           // the URLs" — never a silent pick from some other shelf.
           videoCategory: isKnownCategory(data.videoCategory) ? data.videoCategory! : null,
@@ -646,7 +1371,7 @@ export function registerSocketHandlers(io: Server) {
         const room = createRoom(code, host, settings);
         // Custom links supplied at creation belong to the host who typed them.
         if (settings.normalVideoUrl || settings.imposterVideoUrl) {
-          room.customVideoAuthorId = host.id;
+          room.customContentAuthorId = host.id;
         }
         socket.data.playerId = playerId;
         socket.data.code = code;
@@ -691,6 +1416,20 @@ export function registerSocketHandlers(io: Server) {
         const playerId = durableId(data.playerId, socket);
         socket.data.playerId = playerId;
         socket.data.code = data.code;
+
+        // ── One socket, one player row ──
+        // This connection announcing a different id means whoever it was here
+        // as is a phantom: nothing can drive that row any more, but the room
+        // still counts it, so every "all players ready" gate waits on somebody
+        // who can no longer answer. Cleared ahead of all three branches below —
+        // including before the full/phase guards, so a phantom can never be
+        // what makes a room look full.
+        const phantoms = dropStaleSocketRows(room, socket.id, playerId);
+        if (phantoms.length > 0) {
+          console.warn(
+            `[Room] ${data.code}: cleared ${phantoms.length} duplicate row(s) held by ${socket.id}`
+          );
+        }
 
         // ── Already in this room: a reconnect, or a duplicate join ──
         const known = room.players.find((p) => p.id === playerId);
@@ -745,7 +1484,7 @@ export function registerSocketHandlers(io: Server) {
           socketId: socket.id,
           userId: (socket.data.userId as string | null) ?? null,
           name: data.playerName,
-          avatar: data.avatar,
+          avatar: toAvatarCode(data.avatar),
           cosmetics: sanitizeCosmetics(data.cosmetics),
           isHost: false,
           isReady: false,
@@ -775,14 +1514,18 @@ export function registerSocketHandlers(io: Server) {
       (data: {
         code: string;
         isPublic?: boolean;
+        useCustomContent?: boolean;
         normalVideoUrl?: string;
         imposterVideoUrl?: string;
+        customNormalPrompt?: string;
+        customImposterPrompt?: string;
         wordsPerPlayer?: number;
         maxPlayers?: number;
         imposterCount?: number;
         chatType?: RoomSettings['chatType'];
         voteVisibility?: RoomSettings['voteVisibility'];
         videoCategory?: string | null;
+        themeHint?: boolean;
       }) => {
         const room = getRoom(data.code);
         if (!room || room.hostId !== actorId(socket)) return;
@@ -796,7 +1539,7 @@ export function registerSocketHandlers(io: Server) {
           room.settings.wordsPerPlayer = Math.max(1, Math.min(10, data.wordsPerPlayer));
         }
         if (data.maxPlayers !== undefined) {
-          // Never below the people already in the room, never outside 4–10 (§20).
+          // Never below the people already in the room, never outside 3–10.
           room.settings.maxPlayers = Math.max(
             MIN_PLAYERS,
             room.players.length,
@@ -821,22 +1564,62 @@ export function registerSocketHandlers(io: Server) {
           room.settings.voteVisibility =
             data.voteVisibility === 'anonymous' ? 'anonymous' : 'public';
         }
+        if (data.themeHint !== undefined) room.settings.themeHint = !!data.themeHint;
         if (data.videoCategory !== undefined) {
+          // 'custom' is no longer a mode. A client still holding the old card
+          // is asking for custom content, not for a genre — translate it here
+          // rather than letting isKnownCategory quietly drop it, which would
+          // land that lobby on "no mode at all" with the switch still off.
+          if (data.videoCategory === CUSTOM_CATEGORY) {
+            room.settings.useCustomContent = true;
+          }
           const next = isKnownCategory(data.videoCategory) ? data.videoCategory! : null;
           if (next !== room.settings.videoCategory) {
-            // A genre change invalidates whatever is loaded: leftover URLs from
-            // a pool round would otherwise let a Custom lobby start on them.
+            // A mode change invalidates whatever is loaded. Leftover URLs from
+            // the last round would otherwise let the next one start on them,
+            // and a word pair typed for Words is not a question for Questions.
             room.settings.normalVideoUrl = '';
             room.settings.imposterVideoUrl = '';
+            room.settings.customNormalPrompt = '';
+            room.settings.customImposterPrompt = '';
           }
           room.settings.videoCategory = next;
         }
-        // Applied after the genre so an explicit URL in the same payload wins.
+        // Applied after the mode so content in the same payload wins over the
+        // clear above.
+        if (data.useCustomContent !== undefined) {
+          room.settings.useCustomContent = !!data.useCustomContent;
+          if (!data.useCustomContent) {
+            // Turning it off drops what was typed. Keeping it would let a
+            // second press of the switch put a pair back that the lobby has
+            // since been told is gone — and the author would silently be a
+            // spectator again.
+            room.settings.normalVideoUrl = '';
+            room.settings.imposterVideoUrl = '';
+            room.settings.customNormalPrompt = '';
+            room.settings.customImposterPrompt = '';
+            room.customContentAuthorId = null;
+          }
+        }
         if (data.normalVideoUrl !== undefined) room.settings.normalVideoUrl = data.normalVideoUrl;
         if (data.imposterVideoUrl !== undefined) room.settings.imposterVideoUrl = data.imposterVideoUrl;
-        if (data.normalVideoUrl || data.imposterVideoUrl) {
-          // Whoever pasted the links knows both answers and sits out (§4).
-          room.customVideoAuthorId = actorId(socket);
+        // Same sanitising rule as every other free-text field at this boundary:
+        // trimmed, capped, and never trusted for length. 120 is a question with
+        // room to breathe and still one line on a card.
+        if (data.customNormalPrompt !== undefined) {
+          room.settings.customNormalPrompt = String(data.customNormalPrompt).trim().slice(0, MAX_PROMPT_LENGTH);
+        }
+        if (data.customImposterPrompt !== undefined) {
+          room.settings.customImposterPrompt = String(data.customImposterPrompt).trim().slice(0, MAX_PROMPT_LENGTH);
+        }
+        if (
+          data.normalVideoUrl ||
+          data.imposterVideoUrl ||
+          data.customNormalPrompt ||
+          data.customImposterPrompt
+        ) {
+          // Whoever typed it has seen both halves and sits out (§4).
+          room.customContentAuthorId = actorId(socket);
         }
         // imposterCount is deliberately not settable in Phase 1 — it is pinned
         // to 1 (section 16). The 2-imposter option unlocks in Phase 2 at 7+
@@ -859,6 +1642,7 @@ export function registerSocketHandlers(io: Server) {
           no_such_player: 'That player is not in this lobby',
           offline: 'That player has lost signal',
           already_host: 'They are already the host',
+          is_bot: 'A simulated player cannot host — it would strand the lobby',
         };
         socket.emit('game:error', { message: messages[result.reason] });
         return;
@@ -894,29 +1678,150 @@ export function registerSocketHandlers(io: Server) {
       }
     });
 
+    // ─── Room: Leave ────────────────────────────────────────────────
+    // Walking out on purpose, as opposed to dropping. The distinction matters:
+    // a dropped socket keeps its seat, its vote and its role for the grace
+    // window because it will probably be back, but someone who pressed LEAVE
+    // will not be, so the seat goes now and the room is reaped if that was
+    // the last of them.
+    //
+    // This event has to exist at all because the socket is a singleton that
+    // survives client-side navigation — routing away from /room/[code] does
+    // not disconnect anything, so without this a lobby you walked out of goes
+    // on holding you (and itself) open until you close the tab.
+    socket.on('room:leave', (data: { code: string }) => {
+      const room = getRoom(data.code);
+      if (!room) return;
+      const playerId = actorId(socket);
+      if (!room.players.some((p) => p.id === playerId)) return;
+
+      // Leaving is not dropping — nothing should be waiting to reinstate them.
+      cancelDrop(data.code, playerId);
+      socket.leave(data.code);
+      finalizeDrop(room, playerId, io, 'left');
+    });
+
+    // ─── Testing: fill the lobby with simulated players ─────────────
+    // Host only, lobby only, and only when the server was started with bots
+    // enabled — see BOTS_ENABLED. `count` is a request, not a promise: the
+    // room's own size limit is what actually decides.
+    socket.on(
+      'room:addBots',
+      (
+        data: { code: string; count?: number },
+        callback?: (res: { success: boolean; added?: number; error?: string }) => void
+      ) => {
+        if (!BOTS_ENABLED) {
+          callback?.({ success: false, error: 'Simulated players are disabled on this server' });
+          return;
+        }
+        const room = getRoom(data.code);
+        if (!room) {
+          callback?.({ success: false, error: 'Room not found' });
+          return;
+        }
+        if (room.hostId !== actorId(socket)) {
+          callback?.({ success: false, error: 'Only the host can add players' });
+          return;
+        }
+        // Lobby only. Adding a player mid-round would land them outside
+        // `turnOrder` and outside the imposter draw — a spectator with a
+        // vote, which is not a state the real game has.
+        if (room.phase !== 'lobby') {
+          callback?.({ success: false, error: 'Only in the lobby, between rounds' });
+          return;
+        }
+
+        // Default: enough to make the round startable, which is what the
+        // button is for. A custom round needs one extra, since whoever typed
+        // the content sits out (§4).
+        const sittingOut =
+          usesCustomContent(room) && room.customContentAuthorId
+            ? room.players.some((p) => p.id === room.customContentAuthorId)
+            : false;
+        const playingNow = room.players.length - (sittingOut ? 1 : 0);
+        const wanted =
+          typeof data.count === 'number' && Number.isFinite(data.count)
+            ? Math.floor(data.count)
+            : MIN_PLAYERS - playingNow;
+
+        const room_space = room.settings.maxPlayers - room.players.length;
+        const toAdd = Math.max(0, Math.min(wanted, room_space, MAX_PLAYERS));
+        if (toAdd === 0) {
+          callback?.({
+            success: false,
+            error: room_space <= 0 ? 'Lobby is full' : 'Nothing to add',
+          });
+          return;
+        }
+
+        // Index from the current roster so a second press keeps walking the
+        // name list rather than dealing a second ROXY.
+        const existingBots = room.players.filter((p) => p.isBot).length;
+        for (let i = 0; i < toAdd; i += 1) {
+          addPlayer(data.code, makeBot(existingBots + i));
+        }
+
+        io.to(data.code).emit('room:updated', sanitizeRoom(room));
+        io.emit('rooms:updated', getPublicRooms().map(sanitizeRoom));
+        console.log(`[Bots] ${data.code}: added ${toAdd} simulated player(s)`);
+        callback?.({ success: true, added: toAdd });
+      }
+    );
+
+    socket.on(
+      'room:removeBots',
+      (
+        data: { code: string },
+        callback?: (res: { success: boolean; removed?: number; error?: string }) => void
+      ) => {
+        const room = getRoom(data.code);
+        if (!room || room.hostId !== actorId(socket)) {
+          callback?.({ success: false, error: 'Only the host can do that' });
+          return;
+        }
+        if (room.phase !== 'lobby') {
+          callback?.({ success: false, error: 'Only in the lobby, between rounds' });
+          return;
+        }
+        const removed = removeBots(room);
+        clearBotTicker(data.code);
+        io.to(data.code).emit('room:updated', sanitizeRoom(room));
+        io.emit('rooms:updated', getPublicRooms().map(sanitizeRoom));
+        callback?.({ success: true, removed });
+      }
+    );
+
     // ─── Game: Start ────────────────────────────────────────────────
     socket.on('game:start', (data: { code: string }) => {
       const room = getRoom(data.code);
       if (!room || room.hostId !== actorId(socket)) return;
 
-      // Section 4: on a Custom round the player who supplied the links sits
-      // out, so a Custom lobby needs one more head than a pool one to reach
-      // the same number of actual players. Work the checks off that count —
-      // and off who is actually on the line, since a player inside their
-      // reconnect window cannot be dealt a tape.
+      // Section 4: on a custom round the player who supplied the content sits
+      // out, so that lobby needs one more head than a pool one to reach the
+      // same number of actual players. Work the checks off that count — and off
+      // who is actually on the line, since a player inside their reconnect
+      // window cannot be dealt a tape.
       const genre = room.settings.videoCategory;
-      const isCustomRound = !genre || genre === CUSTOM_CATEGORY;
+      const promptRound = isPromptStyle(genre);
+      const drawRound = isDrawStyle(genre);
+      const spectrumRound = isSpectrumStyle(genre);
+      const bluffRound = isBluffStyle(genre);
+      // Custom is a switch on the mode now, not a mode — and it only bites on
+      // the two styles that have a pair to type. Fake Artist, Wavelength and
+      // Bluff always draw from their own pool, so nobody sits out.
+      const isCustomRound = usesCustomContent(room);
       const present = connectedPlayers(room);
       const sittingOut =
-        isCustomRound && room.customVideoAuthorId
-          ? present.find((p) => p.id === room.customVideoAuthorId)
+        isCustomRound && room.customContentAuthorId
+          ? present.find((p) => p.id === room.customContentAuthorId)
           : undefined;
       const playingCount = present.length - (sittingOut ? 1 : 0);
 
       if (playingCount < MIN_PLAYERS) {
         socket.emit('game:error', {
           message: sittingOut
-            ? `Need ${MIN_PLAYERS} players besides ${sittingOut.name}, who supplied the tapes`
+            ? `Need ${MIN_PLAYERS} players besides ${sittingOut.name}, who wrote the round`
             : `Need at least ${MIN_PLAYERS} players to start`,
         });
         return;
@@ -934,58 +1839,217 @@ export function registerSocketHandlers(io: Server) {
         return;
       }
 
-      // Pool genres draw two distinct clips from /content/videos.json, skipping
-      // anything this lobby has already seen (section 14). Custom is the one
-      // genre that keeps the host's own pair.
-      if (!isCustomRound) {
-        const pair = pickVideoPair(genre, room.usedVideoIds);
-        if (!pair) {
+      // Draw the round's odd one out. Two shapes, one rule: the crew's half
+      // and the suspect's half are decided here, on the server, and neither
+      // ever appears in a room broadcast.
+      let promptPair: { normal: string; imposter: string } | null = null;
+      let drawPick: { word: string; theme: string } | null = null;
+      let spectrumPick: { left: string; right: string; target: number } | null = null;
+      let bluffPick: { word: string; definition: string } | null = null;
+
+      if (bluffRound) {
+        const pick = pickBluffWord(room.usedVideoIds);
+        if (!pick) {
           socket.emit('game:error', {
-            message: `The ${genre} shelf needs at least 2 clips configured`,
+            message: 'The Bluff deck needs at least one word configured',
           });
           return;
         }
-        room.settings.normalVideoUrl = watchUrl(pair.normal.youtubeId);
-        room.settings.imposterVideoUrl = watchUrl(pair.imposter.youtubeId);
-        room.usedVideoIds = pair.usedIds;
+        bluffPick = { word: pick.entry.word, definition: pick.entry.definition };
+        room.usedVideoIds = pick.usedIds;
         console.log(
-          `[Videos] ${data.code} ${genre}: ${pair.normal.id} vs ${pair.imposter.id}` +
-            (pair.recycled ? ' (pool exhausted, history recycled)' : '')
+          `[Bluff] ${data.code}: ${pick.entry.id}` +
+            (pick.recycled ? ' (pool exhausted, history recycled)' : '')
         );
-      }
+      } else if (spectrumRound) {
+        const pick = pickSpectrum(room.usedVideoIds);
+        if (!pick) {
+          socket.emit('game:error', {
+            message: 'The Wavelength deck needs at least one spectrum configured',
+          });
+          return;
+        }
+        spectrumPick = { left: pick.entry.left, right: pick.entry.right, target: pick.target };
+        room.usedVideoIds = pick.usedIds;
+        console.log(
+          `[Wavelength] ${data.code}: ${pick.entry.id} target ${pick.target}` +
+            (pick.recycled ? ' (pool exhausted, history recycled)' : '')
+        );
+      } else if (drawRound) {
+        // One word for the whole crew — there is no pair here, because the
+        // fake is told they are the fake rather than handed a near miss.
+        const pick = pickDrawWord(room.usedVideoIds);
+        if (!pick) {
+          socket.emit('game:error', {
+            message: 'The Fake Artist deck needs at least one word configured',
+          });
+          return;
+        }
+        drawPick = { word: pick.entry.word, theme: pick.entry.theme };
+        room.usedVideoIds = pick.usedIds;
+        console.log(
+          `[FakeArtist] ${data.code}: ${pick.entry.id}` +
+            (pick.recycled ? ' (pool exhausted, history recycled)' : '')
+        );
+      } else if (promptRound && isCustomRound) {
+        // The host's own pair. Same rule as the authored file it replaces: two
+        // halves written together, so they are comparable — which is why this
+        // takes both or neither rather than filling a blank from the pool.
+        const normal = room.settings.customNormalPrompt.trim();
+        const imposter = room.settings.customImposterPrompt.trim();
+        if (!normal || !imposter) {
+          socket.emit('game:error', { message: 'Both custom cards must be filled in first' });
+          return;
+        }
+        promptPair = { normal, imposter };
+        console.log(`[Prompts] ${data.code} ${genre}: host-supplied pair`);
+      } else if (promptRound) {
+        // One authored pair, not two independent picks — see promptLibrary.
+        const pick = pickPromptPair(genre!, room.usedVideoIds);
+        if (!pick) {
+          socket.emit('game:error', {
+            message: `The ${genre} deck needs at least one pair configured`,
+          });
+          return;
+        }
+        promptPair = { normal: pick.pair.normal, imposter: pick.pair.imposter };
+        room.usedVideoIds = pick.usedIds;
+        console.log(
+          `[Prompts] ${data.code} ${genre}: ${pick.pair.id}` +
+            (pick.recycled ? ' (pool exhausted, history recycled)' : '')
+        );
+      } else {
+        // Pool genres draw two distinct clips from /content/videos.json,
+        // skipping anything this lobby has already seen (section 14). With
+        // custom content on, the host's own pair is already on the settings and
+        // the shelf is left alone.
+        if (!isCustomRound) {
+          if (!genre) {
+            socket.emit('game:error', { message: 'Pick a game mode first' });
+            return;
+          }
+          const pair = pickVideoPair(genre, room.usedVideoIds);
+          if (!pair) {
+            socket.emit('game:error', {
+              message: `The ${genre} shelf needs at least 2 clips configured`,
+            });
+            return;
+          }
+          room.settings.normalVideoUrl = watchUrl(pair.normal.youtubeId);
+          room.settings.imposterVideoUrl = watchUrl(pair.imposter.youtubeId);
+          room.usedVideoIds = pair.usedIds;
+          console.log(
+            `[Videos] ${data.code} ${genre}: ${pair.normal.id} vs ${pair.imposter.id}` +
+              (pair.recycled ? ' (pool exhausted, history recycled)' : '')
+          );
+        }
 
-      if (!room.settings.normalVideoUrl || !room.settings.imposterVideoUrl) {
-        socket.emit('game:error', { message: 'Both video URLs must be set before starting' });
-        return;
+        if (!room.settings.normalVideoUrl || !room.settings.imposterVideoUrl) {
+          socket.emit('game:error', { message: 'Both video URLs must be set before starting' });
+          return;
+        }
       }
 
       // resetRound clears per-round state but not roles, so assign after it.
       resetRound(room);
+      // ...which means the pair has to be re-hung afterwards, since `prompts`
+      // and `drawWord` are part of what resetRound clears.
+      room.prompts = promptPair;
+      room.drawWord = drawPick;
+      if (spectrumPick) {
+        room.spectrum = { left: spectrumPick.left, right: spectrumPick.right };
+        room.spectrumTarget = spectrumPick.target;
+      }
+      room.bluffWord = bluffPick;
       // Must run before the imposter pick — the sitter is not a candidate.
       const spectator = assignSpectator(room, isCustomRound);
       // Section 3: both imposters watch the same secret video, so one pick of
       // N ids is all this needs.
       room.imposterIds = pickImposters(room, room.settings.imposterCount);
       room.imposterId = room.imposterIds[0];
+
+      // Wavelength has no hidden role, so the imposter draw is undone and the
+      // psychic picked in its place. This has to happen *before* the deal loop
+      // below — assignmentFor reads room.psychicId, and picking afterwards
+      // dealt every player the empty non-psychic assignment.
+      // Bluff has no hidden role either — everybody writes, everybody votes.
+      if (bluffRound) {
+        room.imposterIds = [];
+        room.imposterId = null;
+      }
+
+      if (spectrumRound) {
+        room.imposterIds = [];
+        room.imposterId = null;
+        const pool = activePlayers(room);
+        room.psychicId = pool[Math.floor(Math.random() * pool.length)]?.id ?? null;
+      }
+      // A drawing round has no watch phase to pass through — the canvas *is*
+      // the round, and the word sits on your own screen for its whole length.
+      // beginDrawPhase sets the phase; everything else starts at 'playing'.
       room.phase = 'playing';
       room.gameStartedAt = Date.now();
       room.players.forEach((p) => (p.isReady = false));
 
-      // Send each player only their video URL — never their role. Section 3:
+      // Send each player only their own half — never their role. Section 3:
       // nobody is told whether they are Crewmate or Imposter, so the payload
       // must not carry `isImposter` even if no UI renders it; it would be
-      // trivially readable from the network tab.
+      // trivially readable from the network tab. A crew card and a suspect
+      // card are the same shape for exactly that reason.
       room.players.forEach((player) => {
         // The sitter gets no tape: they chose both, so there is nothing to
         // show them and nothing they could honestly say about it.
         if (player.isSpectator || !player.socketId) return;
-        const isImposter = room.imposterIds.includes(player.id);
-        io.to(player.socketId).emit('game:assigned', {
-          videoUrl: isImposter ? room.settings.imposterVideoUrl : room.settings.normalVideoUrl,
-        });
+        io.to(player.socketId).emit('game:assigned', assignmentFor(room, player.id));
       });
 
       io.to(data.code).emit('room:updated', sanitizeRoom(room));
+
+      // A prompt round has nothing to buffer and nothing to synchronise, so
+      // there is no `game:play` and no per-player videoEnded to hang the
+      // §6 grace off. Arm the grace from the start instead: the read is the
+      // whole phase, and one player who never clicks Ready must not park the
+      // lobby on a card forever.
+      if (promptRound) {
+        room.imposterVideoEndedAt = Date.now();
+        broadcastReadyState(room, io);
+        startReadyGrace(room, io);
+      }
+
+      // A drawing round skips the ready check entirely. There is nothing to
+      // buffer and nothing to read — the crew's word is on their own screen
+      // from here to the vote — so it opens straight onto the canvas.
+      if (drawRound) {
+        beginDrawPhase(room);
+        emitDrawPhaseStart(room, io);
+      }
+
+      // Wavelength has no hidden role to draw for and no ballot to open. The
+      // psychic is picked from the same pool pickImposters uses (active, not
+      // sitting out) but kept in its own field: calling them an imposter would
+      // put them in `imposterIds`, which the results screen reads as "this
+      // player was hiding" and the reward table reads as a side to pay.
+      if (spectrumRound && room.psychicId) {
+        beginCluePhase(room, room.psychicId);
+        emitCluePhaseStart(room, io);
+      }
+
+      // Bluff opens straight onto the word. There is nothing to deal privately
+      // — everyone sees the same word and writes against it — so no
+      // game:assigned goes out at all on this mode.
+      if (bluffRound) {
+        beginWritingPhase(room);
+        emitWritingPhaseStart(room, io);
+      }
+
+      // Simulated players only act once a round is under way. Reset first:
+      // a second round through the same lobby must not inherit round one's
+      // "already reacted / already voted" deadlines.
+      if (room.players.some((p) => p.isBot)) {
+        resetBotRuntimes(room);
+        startBotTicker(data.code, io);
+      }
+
       console.log(
         `[Game] Started in room ${data.code}` +
           (spectator ? ` (${spectator.name} sitting out — supplied the tapes)` : '')
@@ -1047,7 +2111,142 @@ export function registerSocketHandlers(io: Server) {
       }
     });
 
+    // ─── Watch phase: live emoji reaction (section 5) ───────────────
+    // Fire-and-forget: no ack, no room state, nothing persisted. A reaction
+    // is a moment, and a missed one is not worth a round trip to recover.
+    socket.on('game:react', (data: { code: string; emoji: string }) => {
+      const room = getRoom(data.code);
+      // Watch phase only. §5 puts this button on the video player, and the
+      // later phases have their own channels — words are the evidence and
+      // deliberation has chat, neither of which wants a second, unlogged one.
+      if (!room || room.phase !== 'playing') return;
+
+      // Closed set, checked server-side. The client renders the same five
+      // buttons, but that is a convenience, not the enforcement.
+      if (!isReactionEmoji(data.emoji)) return;
+
+      const player = room.players.find((p) => p.id === actorId(socket));
+      if (!player) return;
+      // The Custom author has no tape playing (§4), so they have nothing to
+      // react to — and a reaction from them would be reacting to the room.
+      if (player.isSpectator) return;
+
+      broadcastReaction(room, player, data.emoji, io);
+    });
+
     // ─── Word phase: submit your word (section 7) ───────────────────
+    // ─── Bluff: your fake definition ────────────────────────────────────
+    socket.on('game:definition', (data: { code: string; text: string }) => {
+      const room = getRoom(data.code);
+      if (!room || room.phase !== 'writing') return;
+      const playerId = actorId(socket);
+      if (!activePlayers(room).some((p) => p.id === playerId)) return;
+      // Capped like every other free-text field. 180 is enough for a plausible
+      // dictionary line and short of an essay that would stand out on sight.
+      const text = String(data.text ?? '').trim().replace(/\s+/g, ' ').slice(0, 180);
+      if (!text) return;
+
+      recordDefinition(room, playerId, text);
+      // Only the count — publishing a definition early would let the writers
+      // after it crib the register and blend in for free.
+      io.to(data.code).emit('game:writingTick', {
+        secondsLeft: room.turnTimeLeft,
+        writtenIn: Object.keys(room.definitions).length,
+        totalWriters: activePlayers(room).length,
+      });
+      if (allDefinitionsIn(room)) startBluffVote(room, io);
+    });
+
+    // ─── Bluff: pick the one you think is real ──────────────────────────
+    socket.on('game:bluffVote', (data: { code: string; optionId: string }) => {
+      const room = getRoom(data.code);
+      if (!room || room.phase !== 'bluffvote') return;
+      if (!castBluffVote(room, actorId(socket), String(data.optionId ?? ''))) return;
+
+      io.to(data.code).emit('game:bluffVoteTick', {
+        secondsLeft: room.turnTimeLeft,
+        votesIn: Object.keys(room.bluffVotes).length,
+        totalVoters: activePlayers(room).length,
+      });
+      if (allBluffVotesIn(room)) finalizeBluffResults(room, io);
+    });
+
+    // ─── Wavelength: the psychic's clue ─────────────────────────────────
+    socket.on('game:clue', (data: { code: string; clue: string }) => {
+      const room = getRoom(data.code);
+      if (!room || room.phase !== 'clue') return;
+      if (actorId(socket) !== room.psychicId) return;
+      const clue = String(data.clue ?? '').trim().replace(/\s+/g, ' ').slice(0, 60);
+      if (!clue) return;
+      clearRoomTimer(data.code);
+      beginGuessPhase(room, clue);
+      emitGuessPhaseStart(room, io);
+    });
+
+    // ─── Wavelength: everyone else dials in ─────────────────────────────
+    socket.on('game:guess', (data: { code: string; value: number }) => {
+      const room = getRoom(data.code);
+      if (!room || room.phase !== 'guessing') return;
+      const playerId = actorId(socket);
+      // The psychic already knows the answer, so they do not get a dial.
+      if (playerId === room.psychicId) return;
+      if (!guessers(room).some((p) => p.id === playerId)) return;
+      if (typeof data.value !== 'number' || !Number.isFinite(data.value)) return;
+
+      recordGuess(room, playerId, data.value);
+      // Only the count goes out, never the values — a published dial would let
+      // everyone after the first simply copy it.
+      io.to(data.code).emit('game:guessTick', {
+        secondsLeft: room.turnTimeLeft,
+        guessesIn: Object.keys(room.guesses).length,
+        totalGuessers: guessers(room).length,
+      });
+      if (allGuessesIn(room)) finalizeSpectrumResults(room, io);
+    });
+
+    // ─── Fake Artist: one stroke, on your turn ──────────────────────────
+    // Same shape as game:word above and deliberately so — it is the same turn
+    // engine, and the two handlers must agree about when a player is out of
+    // turns or the phase hangs waiting for somebody who has already gone.
+    socket.on('game:stroke', (data: { code: string; points: unknown }) => {
+      const room = getRoom(data.code);
+      if (!room || room.phase !== 'drawing') return;
+      const artistId = actorId(socket);
+      if (room.activePlayerId !== artistId) return; // not your turn
+
+      const player = room.players.find((p) => p.id === artistId);
+      if (!player) return;
+      if (playerFinishedTurn(room, artistId)) return; // quota already used
+
+      // Sanitise the geometry like any other user input. Points arrive
+      // normalised 0..1; anything outside that is either a bug or someone
+      // drawing off-canvas to cover the picture, and both clamp the same way.
+      if (!Array.isArray(data.points)) return;
+      const points = data.points
+        .slice(0, STROKE_MAX_POINTS * 2)
+        .map((n) => (typeof n === 'number' && Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0));
+      // Odd length would desync every x/y pair after the missing one.
+      if (points.length % 2 !== 0) points.pop();
+      if (points.length < 4) return; // a single point is not a stroke
+
+      const entry: DrawStroke = {
+        playerId: artistId,
+        playerName: player.name,
+        points,
+        colour: strokeColour(room, artistId),
+        strokeIndex: (room.wordsUsed[artistId] || 0) + 1,
+      };
+      recordStroke(room, artistId, entry);
+
+      io.to(data.code).emit('game:stroke', entry);
+
+      if (playerFinishedTurn(room, artistId)) {
+        nextTurn(room, io);
+      } else {
+        broadcastTurnState(room, io);
+      }
+    });
+
     socket.on('game:word', (data: { code: string; word: string }) => {
       const room = getRoom(data.code);
       if (!room || room.phase !== 'words') return;
@@ -1279,6 +2478,10 @@ function finalizeResults(room: RoomState, io: Server, accusedIds: string[]) {
   if (room.phase === 'results') return;
 
   clearRoomTimer(room.code);
+  // Bots have nothing left to do this round, and an interval left running
+  // against a finished room is exactly the leak the phase timers avoid.
+  // game:start re-arms it if the re-formed lobby is filled again.
+  clearBotTicker(room.code);
   room.phase = 'results';
 
   const imposterIds = room.imposterIds;
@@ -1296,6 +2499,12 @@ function finalizeResults(room: RoomState, io: Server, accusedIds: string[]) {
   const headlineAccused = accusedIds[accusedIds.length - 1] ?? null;
 
   const payload: GameResults = {
+    kind: 'accusation',
+    scores: null,
+    spectrum: null,
+    spectrumTarget: null,
+    psychicId: null,
+    psychicClue: null,
     imposterId: room.imposterId ?? '',
     imposterIds,
     imposterName: imposter?.name ?? 'Unknown',
@@ -1309,9 +2518,19 @@ function finalizeResults(room: RoomState, io: Server, accusedIds: string[]) {
     outcome,
     crewWins,
     tally,
-    // Both videos are safe to reveal now that voting has closed.
-    normalVideoUrl: room.settings.normalVideoUrl,
-    imposterVideoUrl: room.settings.imposterVideoUrl,
+    // Both halves are safe to reveal now that voting has closed — and this is
+    // the first moment either of them is: comparing the two is the reveal.
+    normalVideoUrl: room.prompts || room.drawWord ? '' : room.settings.normalVideoUrl,
+    imposterVideoUrl: room.prompts || room.drawWord ? '' : room.settings.imposterVideoUrl,
+    normalPrompt: room.prompts?.normal ?? null,
+    imposterPrompt: room.prompts?.imposter ?? null,
+    // The crew's word and the fake's hint. Public only now — the whole round
+    // is people trying to work out the first of these from the drawing.
+    drawWord: room.drawWord?.word ?? null,
+    drawTheme: room.drawWord?.theme ?? null,
+    bluffWord: null,
+    bluffTruth: null,
+    bluffReveal: null,
     players: room.players.map((p) => {
       const isImposter = imposterIds.includes(p.id);
       return {
@@ -1337,6 +2556,218 @@ function finalizeResults(room: RoomState, io: Server, accusedIds: string[]) {
   console.log(
     `[Game] Results in ${room.code}: ${outcome} (${impostersCaught}/${imposterCount} caught)`
   );
+}
+
+/**
+ * Closes a Wavelength round: score every guess, pay by points, reveal.
+ *
+ * Deliberately a sibling of finalizeResults rather than a branch inside it.
+ * The two share only the last three lines (stash, broadcast, bank) — there is
+ * no imposter to name, no ballot to tally and no accusation to eject, and
+ * threading five `if (scored)` guards through the accusation builder to reuse
+ * the shell would make both harder to read than either is apart.
+ */
+function finalizeSpectrumResults(room: RoomState, io: Server) {
+  clearRoomTimer(room.code);
+  const target = room.spectrumTarget ?? 50;
+  const psychic = room.players.find((p) => p.id === room.psychicId);
+  const dialled = guessers(room);
+
+  const scoreLines: ScoreLine[] = dialled.map((p) => {
+    const guess = room.guesses[p.id];
+    if (guess === undefined) {
+      return { playerId: p.id, name: p.name, avatar: p.avatar, points: 0, detail: 'never dialled in' };
+    }
+    const points = scoreGuess(guess, target);
+    const off = Math.abs(guess - target);
+    return {
+      playerId: p.id,
+      name: p.name,
+      avatar: p.avatar,
+      points,
+      detail: `guessed ${guess} — ${off} off`,
+    };
+  });
+
+  // The psychic is scored on how well the room read them, which is the only
+  // measure that makes a clue good rather than merely clever. Rounded down so
+  // a psychic cannot out-score every guesser on a split room.
+  if (psychic) {
+    const avg = scoreLines.length
+      ? Math.floor(scoreLines.reduce((n, l) => n + l.points, 0) / scoreLines.length)
+      : 0;
+    scoreLines.push({
+      playerId: psychic.id,
+      name: psychic.name,
+      avatar: psychic.avatar,
+      points: avg,
+      detail: `clued "${room.psychicClue ?? ''}" for ${target}`,
+    });
+  }
+  scoreLines.sort((a, b) => b.points - a.points);
+
+  const pointsOf = new Map(scoreLines.map((l) => [l.playerId, l.points]));
+  const payload: GameResults = {
+    kind: 'score',
+    scores: scoreLines,
+    spectrum: room.spectrum,
+    spectrumTarget: target,
+    psychicId: room.psychicId,
+    psychicClue: room.psychicClue,
+    imposterId: '',
+    imposterIds: [],
+    imposterName: '',
+    imposterAvatar: '',
+    mostVotedId: null,
+    mostVotedName: '',
+    accusedIds: [],
+    accusedNames: [],
+    imposterCount: 0,
+    impostersCaught: 0,
+    outcome: 'crew',
+    crewWins: true,
+    tally: {},
+    normalVideoUrl: '',
+    imposterVideoUrl: '',
+    normalPrompt: null,
+    imposterPrompt: null,
+    drawWord: null,
+    drawTheme: null,
+    bluffWord: null,
+    bluffTruth: null,
+    bluffReveal: null,
+    players: room.players.map((p) => {
+      const points = pointsOf.get(p.id) ?? 0;
+      return {
+        id: p.id,
+        name: p.name,
+        avatar: p.avatar,
+        cosmetics: p.cosmetics,
+        votes: 0,
+        isImposter: false,
+        wasAccused: false,
+        isSpectator: p.isSpectator,
+        coinReward: coinsForPoints(p.isSpectator, points),
+      };
+    }),
+  };
+
+  room.phase = 'results';
+  room.lastResults = payload;
+  io.to(room.code).emit('game:results', payload);
+  bankRewards(room, payload);
+  console.log(`[Wavelength] Results in ${room.code}: target ${target}, ${scoreLines.length} scored`);
+}
+
+/**
+ * Closes a Bluff round: score the fooling and the finding, then reveal who
+ * wrote what.
+ *
+ * Two ways to earn, which is what keeps both halves of the round live: you are
+ * paid for every player your fake caught, and paid more for finding the truth.
+ * A player who writes a convincing fake AND spots the real one out-scores
+ * someone who only does one, without either alone being worthless.
+ */
+function finalizeBluffResults(room: RoomState, io: Server) {
+  clearRoomTimer(room.code);
+  const truth = room.bluffWord?.definition ?? '';
+  const nameOf = (id: string) => room.players.find((p) => p.id === id)?.name ?? 'Unknown';
+
+  const votesFor: Record<string, number> = {};
+  for (const optionId of Object.values(room.bluffVotes)) {
+    votesFor[optionId] = (votesFor[optionId] ?? 0) + 1;
+  }
+
+  const scoreLines: ScoreLine[] = activePlayers(room).map((p) => {
+    const fooled = votesFor[p.id] ?? 0;
+    const foundTruth = room.bluffVotes[p.id] === REAL_DEFINITION_ID;
+    const points = fooled * POINTS_PER_FOOL + (foundTruth ? POINTS_FOR_TRUTH : 0);
+    const bits: string[] = [];
+    if (fooled > 0) bits.push(`fooled ${fooled}`);
+    if (foundTruth) bits.push('found the truth');
+    return {
+      playerId: p.id,
+      name: p.name,
+      avatar: p.avatar,
+      points,
+      detail: bits.length ? bits.join(', ') : 'fooled nobody, missed the truth',
+    };
+  });
+  scoreLines.sort((a, b) => b.points - a.points);
+
+  const reveal = room.bluffOrder.map((id) => ({
+    id,
+    text: id === REAL_DEFINITION_ID ? truth : (room.definitions[id] ?? ''),
+    authorName: id === REAL_DEFINITION_ID ? 'THE DICTIONARY' : nameOf(id),
+    isReal: id === REAL_DEFINITION_ID,
+    votes: votesFor[id] ?? 0,
+  }));
+
+  const pointsOf = new Map(scoreLines.map((l) => [l.playerId, l.points]));
+  const payload: GameResults = {
+    kind: 'score',
+    scores: scoreLines,
+    spectrum: null,
+    spectrumTarget: null,
+    psychicId: null,
+    psychicClue: null,
+    imposterId: '',
+    imposterIds: [],
+    imposterName: '',
+    imposterAvatar: '',
+    mostVotedId: null,
+    mostVotedName: '',
+    accusedIds: [],
+    accusedNames: [],
+    imposterCount: 0,
+    impostersCaught: 0,
+    outcome: 'crew',
+    crewWins: true,
+    tally: {},
+    normalVideoUrl: '',
+    imposterVideoUrl: '',
+    normalPrompt: null,
+    imposterPrompt: null,
+    drawWord: null,
+    drawTheme: null,
+    bluffWord: room.bluffWord?.word ?? null,
+    bluffTruth: truth,
+    bluffReveal: reveal,
+    players: room.players.map((p) => ({
+      id: p.id,
+      name: p.name,
+      avatar: p.avatar,
+      cosmetics: p.cosmetics,
+      votes: 0,
+      isImposter: false,
+      wasAccused: false,
+      isSpectator: p.isSpectator,
+      coinReward: coinsForPoints(p.isSpectator, pointsOf.get(p.id) ?? 0),
+    })),
+  };
+
+  room.phase = 'results';
+  room.lastResults = payload;
+  io.to(room.code).emit('game:results', payload);
+  bankRewards(room, payload);
+  console.log(`[Bluff] Results in ${room.code}: "${room.bluffWord?.word}"`);
+}
+
+/**
+ * Coins on a scored round. Flat participation plus a per-point bonus, so a
+ * round is always worth playing and a good read is worth more — the same shape
+ * as §9's crew payout, expressed in points instead of a win flag.
+ */
+function coinsForPoints(isSpectator: boolean, points: number): CoinReward {
+  if (isSpectator) return { baseCoins: 0, bonusCoins: 0, total: 0, reasons: ['Sat this round out'] };
+  const base = 25;
+  const bonus = points * 25;
+  return {
+    baseCoins: base,
+    bonusCoins: bonus,
+    total: base + bonus,
+    reasons: bonus > 0 ? ['Played the round', `${points} point${points === 1 ? '' : 's'}`] : ['Played the round'],
+  };
 }
 
 /**

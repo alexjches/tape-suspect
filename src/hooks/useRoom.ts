@@ -17,12 +17,15 @@ import {
   ChatMessage,
   GamePhase,
   GameWord,
+  DrawStroke,
+  BluffOption,
   ReadyState,
   TurnState,
   DeliberationState,
   ChatType,
   VoteVisibility,
   EquippedCosmetics,
+  ReactionEmoji,
 } from '@/types';
 
 export interface RoomState {
@@ -34,6 +37,18 @@ export interface RoomState {
   readyState: ReadyState | null;
   turnState: TurnState | null;
   words: GameWord[];
+  /** The shared canvas, in stroke order. Fake Artist only. */
+  strokes: DrawStroke[];
+  /** Wavelength: your own target (psychic only) and the live guess count. */
+  spectrumState: { secondsLeft: number; guessesIn: number; totalGuessers: number } | null;
+  /** Bluff: the word, the ballot (authorless) and the live progress count. */
+  bluffState: {
+    word: string;
+    options: BluffOption[];
+    secondsLeft: number;
+    doneIn: number;
+    total: number;
+  } | null;
   deliberation: DeliberationState | null;
   secondsLeft: number | null;
   voteTally: VoteTally | null;
@@ -51,6 +66,9 @@ const initialState: RoomState = {
   readyState: null,
   turnState: null,
   words: [],
+  strokes: [],
+  spectrumState: null,
+  bluffState: null,
   deliberation: null,
   secondsLeft: null,
   voteTally: null,
@@ -99,6 +117,149 @@ export function useRoom(code: string | null) {
           turnIndex: 0,
           wordsUsed: {},
         },
+      }));
+    };
+
+    // Its own event, not a flag on wordPhaseStart: the two phases render
+    // completely different screens and the hook has to route without knowing
+    // anything about modes.
+    const handleDrawPhaseStart = (data: RoomPublic & TurnState) => {
+      const continuing = (data.gameRound ?? 1) > 1;
+      setState((prev) => ({
+        ...prev,
+        room: data,
+        phase: 'drawing',
+        strokes: continuing ? prev.strokes : [],
+        chatMessages: continuing ? prev.chatMessages : [],
+        turnState: {
+          activePlayerId: data.activePlayerId,
+          turnTimeLeft: data.turnTimeLeft,
+          turnIndex: 0,
+          wordsUsed: {},
+        },
+      }));
+    };
+
+    const handleStroke = (stroke: DrawStroke) => {
+      setState((prev) => ({ ...prev, strokes: [...prev.strokes, stroke] }));
+    };
+
+    // Reconnect only — the canvas is the evidence and drawPhaseStart clears it.
+    const handleStrokeHistory = (data: { strokes: DrawStroke[] }) => {
+      setState((prev) => ({ ...prev, strokes: data.strokes }));
+    };
+
+    const handleCluePhaseStart = (data: RoomPublic & { secondsLeft: number }) => {
+      setState((prev) => ({
+        ...prev,
+        room: data,
+        phase: 'clue',
+        spectrumState: { secondsLeft: data.secondsLeft, guessesIn: 0, totalGuessers: 0 },
+      }));
+    };
+
+    const handleClueTick = (d: { secondsLeft: number }) => {
+      setState((prev) => ({
+        ...prev,
+        spectrumState: { ...(prev.spectrumState ?? { guessesIn: 0, totalGuessers: 0 }), ...d },
+      }));
+    };
+
+    const handleGuessPhaseStart = (
+      data: RoomPublic & { secondsLeft: number; totalGuessers: number }
+    ) => {
+      setState((prev) => ({
+        ...prev,
+        room: data,
+        phase: 'guessing',
+        spectrumState: {
+          secondsLeft: data.secondsLeft,
+          guessesIn: 0,
+          totalGuessers: data.totalGuessers,
+        },
+      }));
+    };
+
+    const handleGuessTick = (d: {
+      secondsLeft: number;
+      guessesIn: number;
+      totalGuessers: number;
+    }) => {
+      setState((prev) => ({ ...prev, spectrumState: d }));
+    };
+
+    const handleWritingPhaseStart = (
+      data: RoomPublic & { word: string; secondsLeft: number; totalWriters: number }
+    ) => {
+      setState((prev) => ({
+        ...prev,
+        room: data,
+        phase: 'writing',
+        bluffState: {
+          word: data.word,
+          options: [],
+          secondsLeft: data.secondsLeft,
+          doneIn: 0,
+          total: data.totalWriters,
+        },
+      }));
+    };
+
+    const handleWritingTick = (d: {
+      secondsLeft: number;
+      writtenIn: number;
+      totalWriters: number;
+    }) => {
+      setState((prev) => ({
+        ...prev,
+        bluffState: prev.bluffState
+          ? {
+              ...prev.bluffState,
+              secondsLeft: d.secondsLeft,
+              doneIn: d.writtenIn,
+              total: d.totalWriters,
+            }
+          : prev.bluffState,
+      }));
+    };
+
+    const handleBluffVoteStart = (
+      data: RoomPublic & {
+        word: string;
+        options: BluffOption[];
+        secondsLeft: number;
+        totalVoters: number;
+      }
+    ) => {
+      setState((prev) => ({
+        ...prev,
+        room: data,
+        phase: 'bluffvote',
+        bluffState: {
+          word: data.word,
+          options: data.options,
+          secondsLeft: data.secondsLeft,
+          doneIn: 0,
+          total: data.totalVoters,
+        },
+      }));
+    };
+
+    const handleBluffVoteTick = (d: {
+      secondsLeft: number;
+      votesIn: number;
+      totalVoters: number;
+    }) => {
+      setState((prev) => ({
+        ...prev,
+        bluffState: prev.bluffState
+          ? {
+              ...prev.bluffState,
+              secondsLeft: d.secondsLeft,
+              doneIn: d.votesIn,
+              total: d.totalVoters,
+            }
+          : prev.bluffState,
       }));
     };
 
@@ -193,6 +354,17 @@ export function useRoom(code: string | null) {
     socket.on('game:readyCount', handleLoadedCount);
     socket.on('game:readyState', handleReadyState);
     socket.on('game:wordPhaseStart', handleWordPhaseStart);
+    socket.on('game:drawPhaseStart', handleDrawPhaseStart);
+    socket.on('game:writingPhaseStart', handleWritingPhaseStart);
+    socket.on('game:writingTick', handleWritingTick);
+    socket.on('game:bluffVoteStart', handleBluffVoteStart);
+    socket.on('game:bluffVoteTick', handleBluffVoteTick);
+    socket.on('game:cluePhaseStart', handleCluePhaseStart);
+    socket.on('game:clueTick', handleClueTick);
+    socket.on('game:guessPhaseStart', handleGuessPhaseStart);
+    socket.on('game:guessTick', handleGuessTick);
+    socket.on('game:stroke', handleStroke);
+    socket.on('game:strokeHistory', handleStrokeHistory);
     socket.on('game:turnState', handleTurnState);
     socket.on('game:word', handleWord);
     socket.on('game:wordHistory', handleWordHistory);
@@ -211,6 +383,17 @@ export function useRoom(code: string | null) {
       socket.off('game:readyCount', handleLoadedCount);
       socket.off('game:readyState', handleReadyState);
       socket.off('game:wordPhaseStart', handleWordPhaseStart);
+      socket.off('game:drawPhaseStart', handleDrawPhaseStart);
+      socket.off('game:writingPhaseStart', handleWritingPhaseStart);
+      socket.off('game:writingTick', handleWritingTick);
+      socket.off('game:bluffVoteStart', handleBluffVoteStart);
+      socket.off('game:bluffVoteTick', handleBluffVoteTick);
+      socket.off('game:cluePhaseStart', handleCluePhaseStart);
+      socket.off('game:clueTick', handleClueTick);
+      socket.off('game:guessPhaseStart', handleGuessPhaseStart);
+      socket.off('game:guessTick', handleGuessTick);
+      socket.off('game:stroke', handleStroke);
+      socket.off('game:strokeHistory', handleStrokeHistory);
       socket.off('game:turnState', handleTurnState);
       socket.off('game:word', handleWord);
       socket.off('game:wordHistory', handleWordHistory);
@@ -293,14 +476,18 @@ export function useRoom(code: string | null) {
         code: string,
         settings: {
           isPublic?: boolean;
+          useCustomContent?: boolean;
           normalVideoUrl?: string;
           imposterVideoUrl?: string;
+          customNormalPrompt?: string;
+          customImposterPrompt?: string;
           wordsPerPlayer?: number;
           maxPlayers?: number;
           imposterCount?: number;
           chatType?: ChatType;
           voteVisibility?: VoteVisibility;
           videoCategory?: string | null;
+          themeHint?: boolean;
         }
       ) => {
         socket.emit('room:updateSettings', { code, ...settings });
@@ -323,6 +510,60 @@ export function useRoom(code: string | null) {
       [socket]
     ),
 
+    /**
+     * Walk out on purpose. Call this before routing away from the room —
+     * navigation alone leaves you in the lobby, because the socket is a
+     * singleton that survives it.
+     *
+     * Outbound only, so there is no listener and no matching `socket.off`:
+     * the server answers with the ordinary `room:updated` everyone else is
+     * already subscribed to.
+     */
+    leave: useCallback(
+      (code: string) => {
+        socket.emit('room:leave', { code });
+      },
+      [socket]
+    ),
+
+    /**
+     * Fill the lobby with simulated players so a round can be started solo
+     * (testing aid). Omit `count` to add just enough to reach the minimum.
+     * Rejected unless the server was started with bots enabled — check
+     * `room.botsAllowed` before offering the control.
+     */
+    addBots: useCallback(
+      (code: string, count?: number) => {
+        return new Promise<number>((resolve, reject) => {
+          socket.emit(
+            'room:addBots',
+            { code, count },
+            (res: { success: boolean; added?: number; error?: string }) => {
+              if (res.success) resolve(res.added ?? 0);
+              else reject(new Error(res.error || 'Could not add players'));
+            }
+          );
+        });
+      },
+      [socket]
+    ),
+
+    removeBots: useCallback(
+      (code: string) => {
+        return new Promise<number>((resolve, reject) => {
+          socket.emit(
+            'room:removeBots',
+            { code },
+            (res: { success: boolean; removed?: number; error?: string }) => {
+              if (res.success) resolve(res.removed ?? 0);
+              else reject(new Error(res.error || 'Could not remove players'));
+            }
+          );
+        });
+      },
+      [socket]
+    ),
+
     startGame: useCallback(
       (code: string) => socket.emit('game:start', { code }),
       [socket]
@@ -340,6 +581,21 @@ export function useRoom(code: string | null) {
       [socket]
     ),
 
+    /**
+     * Send a live reaction during the video (section 5).
+     *
+     * The matching inbound `game:reaction` is deliberately NOT handled here.
+     * Reactions are ephemeral, watch-phase only, and arrive several a second
+     * from a full lobby; putting them in this hook's state would re-render
+     * every screen subscribed to the room on each one. `ReactionBar`
+     * subscribes to the socket directly instead — the same thing `GameScreen`
+     * already does for `game:play`.
+     */
+    sendReaction: useCallback(
+      (code: string, emoji: ReactionEmoji) => socket.emit('game:react', { code, emoji }),
+      [socket]
+    ),
+
     /** This player clicked Ready after their video ended (section 6). */
     readyToAdvance: useCallback(
       (code: string) => socket.emit('game:readyToAdvance', { code }),
@@ -348,6 +604,36 @@ export function useRoom(code: string | null) {
 
     submitWord: useCallback(
       (code: string, word: string) => socket.emit('game:word', { code, word }),
+      [socket]
+    ),
+
+    /** Bluff: your fake definition. */
+    submitDefinition: useCallback(
+      (code: string, text: string) => socket.emit('game:definition', { code, text }),
+      [socket]
+    ),
+
+    /** Bluff: which definition you think is the real one. */
+    submitBluffVote: useCallback(
+      (code: string, optionId: string) => socket.emit('game:bluffVote', { code, optionId }),
+      [socket]
+    ),
+
+    /** Wavelength: the psychic's one clue. */
+    submitClue: useCallback(
+      (code: string, clue: string) => socket.emit('game:clue', { code, clue }),
+      [socket]
+    ),
+
+    /** Wavelength: a guess, 0-100. */
+    submitGuess: useCallback(
+      (code: string, value: number) => socket.emit('game:guess', { code, value }),
+      [socket]
+    ),
+
+    /** One stroke, on your turn. Points are normalised 0..1 by the canvas. */
+    submitStroke: useCallback(
+      (code: string, points: number[]) => socket.emit('game:stroke', { code, points }),
       [socket]
     ),
 

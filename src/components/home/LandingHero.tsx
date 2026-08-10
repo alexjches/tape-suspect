@@ -2,10 +2,44 @@
 // src/components/home/LandingHero.tsx
 // Landing "Access Deck" box — mirrors #hero-section in
 // vhs-frontend-example/home.html (spec section 21).
+//
+// The Access Deck is the identity step itself now, not a menu in front of it:
+// character, name, START. There is no "play as guest" door because guest *is*
+// the default path — signing in is the exception, and it lives in the header
+// (see page.tsx) rather than inside this panel, so nothing competes with START
+// for the eye on the way into a round.
+//
+// The panel is the same panel whether or not you are signed in; what changes is
+// which store it reads and writes. A guest's identity is the two localStorage
+// keys the /dashboard guest gate reads (imposter_guest_name /
+// imposter_guest_avatar), which is what makes that gate fall through instead of
+// asking the identical questions a second time. An account's identity is the
+// User row, seeded here from the session by page.tsx and written back through
+// /api/profile — the same endpoint /profile uses.
+//
+// Both stores are written by the same button, on the same event: START. A
+// guest's character and name are not committed until then either, so making an
+// account save on some other trigger would be the panel behaving differently
+// for the two kinds of player. What does change is the label — see below.
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { useShop } from '@/hooks/useShop';
+import { Avatar } from '@/components/vhs/Avatar';
+import { randomAvatar, nextAvatar, toAvatarCode } from '@/lib/avatars';
+
+/** The signed-in player's stored identity, or null for a guest. */
+export interface LandingAccount {
+  name: string;
+  /** Roster character code, already normalised by page.tsx. */
+  avatar: string;
+}
+
+// Placeholder until the effect below deals a real one. This page is
+// prerendered, so a Math.random() in a useState initialiser would bake one
+// character into the static HTML and pick a different one at hydration.
+const FIRST_FRAME_AVATAR = 'c00';
 
 const SLIDES = [
   {
@@ -81,14 +115,137 @@ const SLIDES = [
   },
 ];
 
-export function LandingHero() {
+export function LandingHero({ account = null }: { account?: LandingAccount | null }) {
   const router = useRouter();
   const { coins } = useShop();
+  const { data: session, status, update } = useSession();
   const [slide, setSlide] = useState(0);
   const [mounted, setMounted] = useState(false);
 
-  // Coins come from localStorage, so hold the SSR value until after mount.
-  useEffect(() => setMounted(true), []);
+  // ── Where the panel's *baseline* identity comes from ────────────────────
+  //
+  // The `account` prop is the server's answer at the moment this route's RSC
+  // payload was built, and the App Router caches that payload: save on
+  // /profile, navigate back here, and you get the old name and face until a
+  // hard reload rebuilds it. That was a real bug, and reaching for
+  // router.refresh() would only paper over it — the prop is a snapshot by
+  // construction, and any other route that writes the profile reintroduces it.
+  //
+  // The session is the live copy instead: update() rewrites it in place, and
+  // every consumer in the tree — this panel, the header chip — sees the new
+  // value in the same commit. The prop is kept for exactly one job: covering
+  // the window before the session resolves, so a signed-in player's name and
+  // face are in the first paint rather than arriving a frame later over an
+  // empty field. During `loading` the two agree except in the stale case, and
+  // in the stale case the prop is still the better guess than nothing.
+  const sessionUser = status === 'authenticated' ? session?.user : null;
+  const accountName =
+    status === 'loading' ? account?.name ?? null : sessionUser ? sessionUser.name ?? '' : null;
+  const accountAvatar =
+    status === 'loading'
+      ? account?.avatar ?? null
+      : sessionUser
+        ? toAvatarCode(sessionUser.image)
+        : null;
+  const signedIn = accountName !== null;
+
+  // ── …and how an edit sits on top of it ──────────────────────────────────
+  //
+  // The fields are an *override* of the baseline rather than a copy of it:
+  // null means "showing what the account holds". Copying into state and
+  // re-syncing with an effect is the obvious alternative and it is worse twice
+  // over — it repaints once with the stale value before the effect corrects
+  // it, and next-auth refetches the session on window focus, so any effect
+  // that re-seeds on a new session object would wipe a half-typed name every
+  // time the player alt-tabs. An override cannot do either: it is only ever
+  // cleared deliberately, on a successful save.
+  const [nameEdit, setNameEdit] = useState<string | null>(null);
+  const [avatarEdit, setAvatarEdit] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  // A guest's baseline is localStorage, which the server cannot read — hence
+  // the mount effect below and FIRST_FRAME_AVATAR rather than a value seeded
+  // during render.
+  const [guestBase, setGuestBase] = useState({ name: '', avatar: FIRST_FRAME_AVATAR });
+
+  const baseName = signedIn ? accountName! : guestBase.name;
+  const baseAvatar = signedIn ? accountAvatar! : guestBase.avatar;
+  const name = nameEdit ?? baseName;
+  const avatar = avatarEdit ?? baseAvatar;
+
+  // Coins come from localStorage for a guest, so hold the SSR value until
+  // after mount — and so does a guest's identity.
+  useEffect(() => {
+    setMounted(true);
+    // A signed-in player's identity is the account, not whatever guest keys an
+    // earlier session left behind. Reading them here would show the face of a
+    // guest this browser used to be, and START would then write it to the
+    // account — a rename nobody asked for.
+    if (signedIn) return;
+    setGuestBase({
+      name: localStorage.getItem('imposter_guest_name') ?? '',
+      avatar: localStorage.getItem('imposter_guest_avatar') || randomAvatar(),
+    });
+  }, [signedIn]);
+
+  const trimmed = name.trim();
+  const ready = trimmed.length >= 2;
+  // Only meaningful when signed in: whether START has a save to do before it
+  // routes, which is also what the button labels itself with. Compared against
+  // the live baseline, so a stale prop cannot make an unchanged panel offer to
+  // save — or a changed one fail to.
+  const dirty = signedIn && (trimmed !== baseName || avatar !== baseAvatar);
+
+  const start = useCallback(async () => {
+    const value = name.trim();
+    if (value.length < 2 || saving) return;
+    setError('');
+
+    if (signedIn) {
+      // Skipped when nothing changed, so pressing START to go and play is not
+      // a database write.
+      if (value !== baseName || avatar !== baseAvatar) {
+        setSaving(true);
+        try {
+          const res = await fetch('/api/profile', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: value, avatar }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            setError((data.error || 'COULD NOT SAVE PROFILE').toUpperCase());
+            setSaving(false);
+            return;
+          }
+          // The session is a JWT, so the row is not re-read on the next
+          // request — without this the header chip and the socket join would
+          // both go on using the old identity. See the jwt callback in
+          // lib/auth.ts, and the same call in /profile.
+          await update({ name: data.name, picture: data.avatar });
+          // Drop the overrides so the panel follows the account again. Doing
+          // this *after* update() means the fields never flicker back through
+          // the old baseline on the way.
+          setNameEdit(null);
+          setAvatarEdit(null);
+        } catch {
+          setError('SOMETHING WENT WRONG');
+          setSaving(false);
+          return;
+        }
+        setSaving(false);
+      }
+      // No `?guest=1`: that flag is what puts /dashboard's guest gate in front
+      // of the router, and a signed-in player has already answered it.
+      router.push('/dashboard');
+      return;
+    }
+
+    localStorage.setItem('imposter_guest_name', value);
+    localStorage.setItem('imposter_guest_avatar', avatar);
+    router.push('/dashboard?guest=1');
+  }, [name, avatar, router, signedIn, baseName, baseAvatar, saving, update]);
 
   const go = useCallback((n: number) => {
     setSlide((s) => (s + n + SLIDES.length) % SLIDES.length);
@@ -119,33 +276,88 @@ export function LandingHero() {
           <div className="gartic-inner-grid">
             {/* ── Access Deck ─────────────────────────────────── */}
             <div className="gartic-panel play-setup-panel">
-              <h3 className="gartic-panel-title">Access Deck</h3>
+              <h3 className="gartic-panel-title">Profile</h3>
 
-              <div className="player-setup-intro">
-                <p className="intro-heading">INSERT PROFILE CASSETTE</p>
-                <p className="intro-sub">
-                  Choose your access mode to enter the lobby router.
-                </p>
+              <div className="access-identity">
+                <div className="avatar-creator-box">
+                  <div className="avatar-preview-container character-slot">
+                    <div id="avatar-svg-wrapper">
+                      <Avatar code={avatar} size={168} />
+                    </div>
+                    {/* Steps the roster in order rather than randomising:
+                        browsing the cast should be predictable, not a slot
+                        machine that can repeat the face you just left. */}
+                    <button
+                      id="hero-avatar-btn"
+                      type="button"
+                      className="btn-circular"
+                      title="Next character"
+                      aria-label="Next character"
+                      onClick={() => setAvatarEdit(nextAvatar(avatar))}
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        width={24}
+                        height={24}
+                        stroke="currentColor"
+                        strokeWidth={3}
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div className="avatar-helper-text">TAP TO CHANGE CHARACTER</div>
+                  {/* Signed in, the panel is editing an account rather than a
+                      throwaway identity, so it says whose it is. Deliberately
+                      not a second heading: the panel is already titled
+                      "Profile" and this is one line of caption under it. */}
+                  {signedIn && (
+                    <div className="avatar-helper-text access-account-note">
+                      SIGNED IN — SAVED TO YOUR ACCOUNT
+                    </div>
+                  )}
+                </div>
+
+                <div className="access-name-row">
+                  <input
+                    id="hero-name-input"
+                    type="text"
+                    className="brutal-input access-name-input"
+                    value={name}
+                    onChange={(e) => {
+                      setNameEdit(e.target.value);
+                      setError('');
+                    }}
+                    placeholder="YOUR NAME"
+                    maxLength={20}
+                    aria-label="Your name"
+                    onKeyDown={(e) => e.key === 'Enter' && start()}
+                  />
+                  {/* The label is what tells a signed-in player their edits are
+                      not lost — the panel has no SAVE button of its own, and
+                      adding one would put a second control beside START on the
+                      screen whose whole job is START. When nothing has been
+                      touched it stays the plain word, so the extra promise only
+                      appears when there is something to promise. */}
+                  <button
+                    id="hero-start-btn"
+                    className="btn-brutal green access-start-btn"
+                    disabled={!ready || saving}
+                    onClick={start}
+                  >
+                    {saving ? 'SAVING…' : dirty ? 'SAVE & START ⏵' : 'START ⏵'}
+                  </button>
+                </div>
+
+                {error && (
+                  <div className="access-error osd-text" role="alert">
+                    ⛔ {error}
+                  </div>
+                )}
               </div>
-
-              <div className="setup-actions">
-                <button
-                  id="hero-guest-btn"
-                  className="btn-brutal magenta large-brutal-btn"
-                  onClick={() => router.push('/dashboard?guest=1')}
-                >
-                  👤 PLAY AS GUEST
-                </button>
-                <button
-                  id="hero-login-btn"
-                  className="btn-brutal cyan large-brutal-btn"
-                  onClick={() => router.push('/login')}
-                >
-                  🔑 SIGN UP / SIGN IN
-                </button>
-              </div>
-
-              <p className="setup-note osd-text">SYSTEM STATUS: ONLINE</p>
             </div>
 
             {/* ── How to play ─────────────────────────────────── */}

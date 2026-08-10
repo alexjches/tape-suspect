@@ -9,3 +9,13 @@ dist
 # Local SQLite dev database — churns on every write, not shared state.
 prisma/*.db
 prisma/*.db-journal
+
+# playwright-cli's working directory — page snapshots, console logs and
+# screenshots written on every browser-driven check. Session scratch, not
+# shared state, same reasoning as the dev database above.
+.playwright-cli/
+
+# Third-party reference checkout (VoltAgent/awesome-design-md), cloned for
+# reading. It has its own .git, so committing it stores a bare gitlink no clone
+# can resolve — and nothing in src/ imports it.
+awesome-design-md/

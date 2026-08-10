@@ -13,6 +13,7 @@ import type {
 } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
 import { vcrSkinStyles } from '@/lib/cosmetics';
+import { Avatar } from '@/components/vhs/Avatar';
 
 // Console glow colours, assigned by seat so they stay stable across renders.
 const CHANNEL_COLORS = [
@@ -214,8 +215,16 @@ export function DeliberationScreen({
                   <div className="monitor-osd">
                     CH. {i + 1} {isMe ? '- YOU' : '- REC'}
                   </div>
+                  {/* The character rides the console edge in its own circle,
+                      the way the lobby's consoles carry it — .player-tag is a
+                      0.6rem pill and an avatar sized to be legible bursts out
+                      of it. Both elements are on .vhs-player in the
+                      prototype's lobby, so the pairing is its own. */}
+                  <div className="player-avatar-circle character-slot">
+                    <Avatar code={player.avatar} size={46} />
+                  </div>
                   <div className="player-tag" style={skin.tag}>
-                    {player.avatar} {player.isHost ? 'HOST' : `PLAYER-${i + 1}`}
+                    {player.isHost ? 'HOST' : `PLAYER-${i + 1}`}
                   </div>
                   <div className="player-display" style={skin.display}>
                     <div className="player-display-text" style={skin.displayText}>

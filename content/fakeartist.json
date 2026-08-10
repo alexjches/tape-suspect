@@ -1,0 +1,79 @@
+{
+  "_comment": [
+    "Fake Artist words. Unlike content/prompts.json these are NOT pairs —",
+    "everyone draws the same word and the fake knows they are the fake.",
+    "",
+    "The `theme` is the hint the fake receives when settings.themeHint is on.",
+    "Authoring rule: a theme must be wide enough that naming it does not give",
+    "the word away, and narrow enough that the fake can draw something that",
+    "does not look instantly wrong. 'Buildings' for CASTLE works; 'Fortified",
+    "medieval buildings' does not, and neither does 'Things'.",
+    "",
+    "Second rule: the word has to be *drawable in a few strokes*. A player gets",
+    "one stroke per turn, so the whole picture is maybe 12-30 strokes between",
+    "everyone. Abstract nouns are unplayable here — keep them concrete.",
+    "",
+    "`theme` is sent to the fake only, and only when the setting is on.",
+    "The word itself reaches the crew through assignmentFor() and nowhere else,",
+    "and becomes public in game:results."
+  ],
+  "words": [
+    { "id": "fa-castle", "word": "Castle", "theme": "Buildings" },
+    { "id": "fa-lighthouse", "word": "Lighthouse", "theme": "Buildings" },
+    { "id": "fa-windmill", "word": "Windmill", "theme": "Buildings" },
+    { "id": "fa-igloo", "word": "Igloo", "theme": "Buildings" },
+    { "id": "fa-church", "word": "Church", "theme": "Buildings" },
+
+    { "id": "fa-octopus", "word": "Octopus", "theme": "Animals" },
+    { "id": "fa-giraffe", "word": "Giraffe", "theme": "Animals" },
+    { "id": "fa-penguin", "word": "Penguin", "theme": "Animals" },
+    { "id": "fa-snail", "word": "Snail", "theme": "Animals" },
+    { "id": "fa-hedgehog", "word": "Hedgehog", "theme": "Animals" },
+    { "id": "fa-flamingo", "word": "Flamingo", "theme": "Animals" },
+
+    { "id": "fa-pineapple", "word": "Pineapple", "theme": "Food" },
+    { "id": "fa-hotdog", "word": "Hot dog", "theme": "Food" },
+    { "id": "fa-cupcake", "word": "Cupcake", "theme": "Food" },
+    { "id": "fa-sushi", "word": "Sushi", "theme": "Food" },
+    { "id": "fa-popcorn", "word": "Popcorn", "theme": "Food" },
+
+    { "id": "fa-submarine", "word": "Submarine", "theme": "Vehicles" },
+    { "id": "fa-hotairballoon", "word": "Hot air balloon", "theme": "Vehicles" },
+    { "id": "fa-tractor", "word": "Tractor", "theme": "Vehicles" },
+    { "id": "fa-skateboard", "word": "Skateboard", "theme": "Vehicles" },
+    { "id": "fa-rocket", "word": "Rocket", "theme": "Vehicles" },
+
+    { "id": "fa-umbrella", "word": "Umbrella", "theme": "Everyday objects" },
+    { "id": "fa-toothbrush", "word": "Toothbrush", "theme": "Everyday objects" },
+    { "id": "fa-lamp", "word": "Desk lamp", "theme": "Everyday objects" },
+    { "id": "fa-kettle", "word": "Kettle", "theme": "Everyday objects" },
+    { "id": "fa-scissors", "word": "Scissors", "theme": "Everyday objects" },
+    { "id": "fa-key", "word": "Key", "theme": "Everyday objects" },
+
+    { "id": "fa-guitar", "word": "Guitar", "theme": "Music" },
+    { "id": "fa-drumkit", "word": "Drum kit", "theme": "Music" },
+    { "id": "fa-trumpet", "word": "Trumpet", "theme": "Music" },
+    { "id": "fa-headphones", "word": "Headphones", "theme": "Music" },
+
+    { "id": "fa-cactus", "word": "Cactus", "theme": "Nature" },
+    { "id": "fa-volcano", "word": "Volcano", "theme": "Nature" },
+    { "id": "fa-mushroom", "word": "Mushroom", "theme": "Nature" },
+    { "id": "fa-waterfall", "word": "Waterfall", "theme": "Nature" },
+    { "id": "fa-snowman", "word": "Snowman", "theme": "Nature" },
+
+    { "id": "fa-crown", "word": "Crown", "theme": "Clothing" },
+    { "id": "fa-boot", "word": "Wellington boot", "theme": "Clothing" },
+    { "id": "fa-sunglasses", "word": "Sunglasses", "theme": "Clothing" },
+    { "id": "fa-bowtie", "word": "Bow tie", "theme": "Clothing" },
+
+    { "id": "fa-ghost", "word": "Ghost", "theme": "Spooky" },
+    { "id": "fa-vampire", "word": "Vampire", "theme": "Spooky" },
+    { "id": "fa-skeleton", "word": "Skeleton", "theme": "Spooky" },
+    { "id": "fa-spider", "word": "Spider", "theme": "Spooky" },
+
+    { "id": "fa-anchor", "word": "Anchor", "theme": "The sea" },
+    { "id": "fa-jellyfish", "word": "Jellyfish", "theme": "The sea" },
+    { "id": "fa-treasurechest", "word": "Treasure chest", "theme": "The sea" },
+    { "id": "fa-seahorse", "word": "Seahorse", "theme": "The sea" }
+  ]
+}

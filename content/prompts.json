@@ -1,0 +1,50 @@
+{
+  "_comment": [
+    "Word and question pools for the two non-video modes.",
+    "Each round picks ONE PAIR: the crewmates get `normal`, the suspect(s) get",
+    "`imposter`. Unlike videos.json, the two halves are AUTHORED TOGETHER and",
+    "must not be drawn independently — that is the whole design of this file.",
+    "Two random words are almost never a game: BEACH against PHOTOSYNTHESIS is",
+    "over on the first clue. A pair only works when the honest answers overlap,",
+    "so the suspect can say something true about their own card and have it",
+    "pass. Aim for near misses that share the obvious associations and differ",
+    "on one axis: WEDDING/FUNERAL both give you church, family, flowers, suit.",
+    "`note` is an internal comment and is never sent to players.",
+    "Keep each pool at 12+ pairs so repeats stay rare within a lobby session."
+  ],
+  "words": [
+    { "id": "w-wedding", "normal": "WEDDING", "imposter": "FUNERAL", "note": "church, family, flowers, suit, speeches" },
+    { "id": "w-beach", "normal": "BEACH", "imposter": "DESERT", "note": "sand, hot, dry, sun" },
+    { "id": "w-castle", "normal": "CASTLE", "imposter": "PRISON", "note": "stone, walls, gates, guards, locked" },
+    { "id": "w-vampire", "normal": "VAMPIRE", "imposter": "MOSQUITO", "note": "blood, bite, night" },
+    { "id": "w-dentist", "normal": "DENTIST", "imposter": "BARBER", "note": "chair, appointment, tools, small talk" },
+    { "id": "w-library", "normal": "LIBRARY", "imposter": "MUSEUM", "note": "quiet, old, shelves, free entry" },
+    { "id": "w-pirate", "normal": "PIRATE", "imposter": "VIKING", "note": "ship, beard, raid, sea, treasure" },
+    { "id": "w-guitar", "normal": "GUITAR", "imposter": "VIOLIN", "note": "strings, wood, band, practice" },
+    { "id": "w-snowman", "normal": "SNOWMAN", "imposter": "ICE CREAM", "note": "cold, melts, white, winter/summer" },
+    { "id": "w-birthday", "normal": "BIRTHDAY", "imposter": "CHRISTMAS", "note": "presents, cake, family, cards" },
+    { "id": "w-cinema", "normal": "CINEMA", "imposter": "THEATRE", "note": "seats, tickets, dark, interval" },
+    { "id": "w-football", "normal": "FOOTBALL", "imposter": "RUGBY", "note": "pitch, team, ball, crowd" },
+    { "id": "w-rocket", "normal": "ROCKET", "imposter": "AEROPLANE", "note": "fuel, launch, sky, countdown" },
+    { "id": "w-penguin", "normal": "PENGUIN", "imposter": "SEAL", "note": "cold, swims, black and white, fish" },
+    { "id": "w-gym", "normal": "GYM", "imposter": "SWIMMING POOL", "note": "changing rooms, membership, lockers, sweat" },
+    { "id": "w-campfire", "normal": "CAMPFIRE", "imposter": "FIREPLACE", "note": "warm, logs, smoke, stories" }
+  ],
+  "questions": [
+    { "id": "q-holiday", "normal": "Where would you go on a dream holiday?", "imposter": "Where would you never go on holiday?" },
+    { "id": "q-rated", "normal": "What is massively overrated?", "imposter": "What is massively underrated?" },
+    { "id": "q-temp", "normal": "What is the best food to eat hot?", "imposter": "What is the best food to eat cold?" },
+    { "id": "q-sound", "normal": "What is the most relaxing sound?", "imposter": "What is the most annoying sound?" },
+    { "id": "q-job", "normal": "What job would you be brilliant at?", "imposter": "What job would you be terrible at?" },
+    { "id": "q-season", "normal": "What is the best thing about summer?", "imposter": "What is the best thing about winter?" },
+    { "id": "q-date", "normal": "What is a great first-date activity?", "imposter": "What is a terrible first-date activity?" },
+    { "id": "q-film", "normal": "Name a film you could watch a hundred times.", "imposter": "Name a film you would never watch again." },
+    { "id": "q-money", "normal": "What is always worth the money?", "imposter": "What is always a waste of money?" },
+    { "id": "q-room", "normal": "Name something you would find in a kitchen.", "imposter": "Name something you would find in a garage." },
+    { "id": "q-pack", "normal": "What would you pack for a festival?", "imposter": "What would you pack for a camping trip?" },
+    { "id": "q-snack", "normal": "What is the best snack at the cinema?", "imposter": "What is the best snack at a football match?" },
+    { "id": "q-sunday", "normal": "How would you spend a free Sunday?", "imposter": "How would you spend a day off work in the week?" },
+    { "id": "q-gift", "normal": "What is a great present to give?", "imposter": "What is a great present to receive?" },
+    { "id": "q-skill", "normal": "What skill would you love to learn?", "imposter": "What skill do you wish you had learned as a child?" }
+  ]
+}

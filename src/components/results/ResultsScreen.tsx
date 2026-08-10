@@ -11,8 +11,10 @@ import { useEffect, useState, useRef } from 'react';
 import { GameResults } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
 import { useRouter } from 'next/navigation';
+import { useHomeHref } from '@/lib/useHomeHref';
 import { useShop } from '@/hooks/useShop';
 import { tapeSkinStyles, equippedSticker } from '@/lib/cosmetics';
+import { Avatar } from '@/components/vhs/Avatar';
 
 interface Props {
   results: GameResults;
@@ -35,6 +37,9 @@ function tapeLabel(url: string): string {
 
 export function ResultsScreen({ results, playerId, actions, code }: Props) {
   const router = useRouter();
+  // LEAVE goes to the lobby router, not to the landing page — and for a guest
+  // that means /dashboard?guest=1, since a bare /dashboard bounces them.
+  const homeHref = useHomeHref();
   // `persistent` is false for guests, whose coins live in localStorage and go
   // away with it — §11 wants them told exactly here, once a round has ended.
   const { addCoins, persistent } = useShop();
@@ -149,21 +154,31 @@ export function ResultsScreen({ results, playerId, actions, code }: Props) {
 
   // Rank without mutating the payload we were handed.
   const ranked = [...results.players].sort((a, b) => b.votes - a.votes);
+  // A scored round has no accusation, no ballot and no roles to reveal.
+  const scored = results.kind === 'score';
   const maxVotes = Math.max(1, ...ranked.map((p) => p.votes));
 
   return (
     <div className="view-panel active-view">
       <div className="results-container">
+        {/* A scored round ejects nobody: there was no ballot and no accused,
+            so the banner, the eject animation and the tally below would all be
+            furniture from a game that did not happen. */}
         <div>
           <h2 className="brutal-title results-banner" style={{ color: bannerColor }}>
-            TAPE EJECTED
+            {scored ? 'SIGNAL READ' : 'TAPE EJECTED'}
           </h2>
           <p className="osd-text" style={{ color: '#aaa' }}>
-            Votes tallied — the deck is spitting out {accusedNames.join(' and ')}…
+            {results.bluffReveal
+              ? 'Ballots in — here is who wrote what…'
+              : scored
+                ? 'Dials locked — here is how close everyone landed…'
+                : `Votes tallied — the deck is spitting out ${accusedNames.join(' and ')}…`}
           </p>
         </div>
 
         {/* Cassette eject: the accused player's tape leaves the deck. */}
+        {!scored && (
         <div className={`vcr-deck${ejected ? ' ejected' : ''}`}>
           <div className="vcr-slot">
             <div className="vcr-door">EJECTING TAPE</div>
@@ -216,9 +231,13 @@ export function ResultsScreen({ results, playerId, actions, code }: Props) {
             </div>
           </div>
         </div>
+        )}
 
-        {/* ── Verdict ─────────────────────────────────────────────── */}
-        {showWinner && (
+        {/* ── Verdict ───────────────────────────────────────────────
+            Accusation rounds only. A scored round has no suspect to name and
+            no side that won, so this whole card would render "The suspect was
+            ." over an empty string. Its replacement is the score table below. */}
+        {showWinner && results.kind === 'accusation' && (
           <div className="brutal-card yellow" style={{ width: '100%', color: '#000' }}>
             <h3
               className="brutal-title"
@@ -239,9 +258,27 @@ export function ResultsScreen({ results, playerId, actions, code }: Props) {
             </p>
             <p style={{ fontWeight: 600, marginTop: 8 }}>
               The suspect{imposterPlayers.length > 1 ? 's were' : ' was'}{' '}
-              <span style={{ textTransform: 'uppercase' }}>
-                {imposterPlayers.map((p) => `${p.avatar} ${p.name}`).join(', ') ||
-                  results.imposterName}
+              <span
+                style={{
+                  textTransform: 'uppercase',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  verticalAlign: 'middle',
+                }}
+              >
+                {imposterPlayers.length > 0
+                  ? imposterPlayers.map((p, i) => (
+                      <span
+                        key={p.id}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                      >
+                        <Avatar code={p.avatar} size={22} />
+                        {p.name}
+                        {i < imposterPlayers.length - 1 ? ',' : ''}
+                      </span>
+                    ))
+                  : results.imposterName}
               </span>
               .
             </p>
@@ -316,7 +353,7 @@ export function ResultsScreen({ results, playerId, actions, code }: Props) {
         )}
 
         {/* ── Final tally ─────────────────────────────────────────── */}
-        {showWinner && (
+        {showWinner && !scored && (
           <div className="brutal-card" style={{ width: '100%', textAlign: 'left' }}>
             <div className="reveal-title-tag">FINAL VOTE COUNT</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
@@ -327,7 +364,7 @@ export function ResultsScreen({ results, playerId, actions, code }: Props) {
                     key={player.id}
                     style={{ display: 'flex', alignItems: 'center', gap: 10 }}
                   >
-                    <span style={{ fontSize: '1.1rem' }}>{player.avatar}</span>
+                    <Avatar code={player.avatar} size={24} />
                     <span
                       className="osd-text"
                       style={{
@@ -367,8 +404,132 @@ export function ResultsScreen({ results, playerId, actions, code }: Props) {
           </div>
         )}
 
+        {/* ── The two halves, finally comparable ───────────────────
+            On a Words or Questions round this pair is the whole reveal:
+            until this moment nobody has seen both cards, which is why the
+            near miss between them is the joke the round was built on. */}
+        {showWinner && results.normalPrompt && (
+          <div className="results-info-cards">
+            <div className="brutal-card video-reveal-card">
+              <div className="reveal-title-tag">CREW CARD</div>
+              <div className="reveal-value" style={{ color: 'var(--neon-cyan)' }}>
+                &quot;{results.normalPrompt}&quot;
+              </div>
+            </div>
+            <div className="brutal-card video-reveal-card">
+              <div className="reveal-title-tag">SUSPECT CARD</div>
+              <div className="reveal-value" style={{ color: 'var(--neon-magenta)' }}>
+                &quot;{results.imposterPrompt}&quot;
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showWinner && results.kind === 'score' && results.scores && (
+          <div className="brutal-card yellow" style={{ width: '100%', color: '#000' }}>
+            <h3
+              className="brutal-title"
+              style={{ fontSize: '1.5rem', color: '#000', textShadow: 'none', marginBottom: 6 }}
+            >
+              {results.bluffReveal ? '📖' : '🎯'}{' '}
+              {results.scores[0]?.name?.toUpperCase() ?? 'NOBODY'}
+              {results.bluffReveal ? ' PLAYED IT BEST' : ' READ THE ROOM'}
+            </h3>
+            <p style={{ fontWeight: 600 }}>
+              {results.scores[0]?.points ?? 0} point
+              {(results.scores[0]?.points ?? 0) === 1 ? '' : 's'}
+              {results.spectrumTarget !== null ? ` — the target was ${results.spectrumTarget}.` : '.'}
+            </p>
+          </div>
+        )}
+
+        {/* ── Bluff: whose fake was whose ──────────────────────────
+            The authors are attached here and nowhere earlier — during the
+            ballot the options carry text and an id only. */}
+        {showWinner && results.bluffReveal && (
+          <div className="bluff-reveal">
+            <div className="bluff-reveal-word">
+              {results.bluffWord} <span>really means</span>
+            </div>
+            <ul className="bluff-reveal-list">
+              {results.bluffReveal.map((o) => (
+                <li key={o.id} className={`bluff-reveal-row${o.isReal ? ' real' : ''}`}>
+                  <span className="bluff-reveal-author">{o.authorName}</span>
+                  <span className="bluff-reveal-text">{o.text}</span>
+                  <span className="bluff-reveal-votes">
+                    {o.votes} {o.votes === 1 ? 'vote' : 'votes'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* ── A scored round has no reveal, it has a table ─────────
+            Gated on `kind` rather than on a mode id: a second scoring mode
+            must not have to be added to a list of string comparisons. */}
+        {showWinner && results.kind === 'score' && results.scores && (
+          <div className="wl-results">
+            {results.spectrum && (
+              <div className="wl-results-scale">
+                <span className="wl-end left">{results.spectrum.left}</span>
+                <div className="wl-track">
+                  <div className="wl-target" style={{ left: `${results.spectrumTarget ?? 50}%` }}>
+                    <span className="wl-target-flag">{results.spectrumTarget}</span>
+                  </div>
+                </div>
+                <span className="wl-end right">{results.spectrum.right}</span>
+              </div>
+            )}
+            {results.spectrum && (
+              <div className="wl-results-clue">
+                CLUE: &ldquo;{results.psychicClue ?? '—'}&rdquo;
+              </div>
+            )}
+            <ol className="wl-score-list">
+              {results.scores.map((line, i) => (
+                <li key={line.playerId} className="wl-score-row">
+                  <span className="wl-score-rank">{i + 1}</span>
+                  <span className="character-slot wl-score-face">
+                    <Avatar code={line.avatar} size={28} />
+                  </span>
+                  <span className="wl-score-name">
+                    {line.name}
+                    {line.playerId === results.psychicId ? ' — PSYCHIC' : ''}
+                  </span>
+                  <span className="wl-score-detail">{line.detail}</span>
+                  <span className="wl-score-points">{line.points}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+
+        {/* ── What they were all drawing ───────────────────────────
+            On Fake Artist there is no pair to compare: everyone but one had
+            the same word, and the reveal is that word next to whatever the
+            fake was working from. Showing the hint too is the point — "they
+            only had 'Animals'" is what decides whether a bad stroke was
+            guilt or just bad drawing. */}
+        {showWinner && results.drawWord && (
+          <div className="results-info-cards">
+            <div className="brutal-card video-reveal-card">
+              <div className="reveal-title-tag">THE WORD</div>
+              <div className="reveal-value" style={{ color: 'var(--neon-cyan)' }}>
+                &quot;{results.drawWord}&quot;
+              </div>
+            </div>
+            <div className="brutal-card video-reveal-card">
+              <div className="reveal-title-tag">THE FAKE HAD</div>
+              <div className="reveal-value" style={{ color: 'var(--neon-magenta)' }}>
+                {results.drawTheme ? `"${results.drawTheme}"` : 'NOTHING AT ALL'}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── The two tapes, finally comparable ───────────────────── */}
-        {showWinner && (
+        {showWinner && results.kind === 'accusation' && !results.normalPrompt && !results.drawWord && (
           <div className="results-info-cards">
             <div className="brutal-card video-reveal-card">
               <div className="reveal-title-tag">CREW TAPE RECORDING</div>
@@ -418,10 +579,15 @@ export function ResultsScreen({ results, playerId, actions, code }: Props) {
             >
               🛒 SHOP
             </button>
+            {/* Tell the server before routing: the socket survives client-side
+                navigation, so walking away is not leaving unless we say so. */}
             <button
               id="leave-room-btn"
               className="btn-brutal dark"
-              onClick={() => router.push('/dashboard')}
+              onClick={() => {
+                actions.leave(code);
+                router.push(homeHref);
+              }}
             >
               ⏏ LEAVE
             </button>

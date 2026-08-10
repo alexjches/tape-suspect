@@ -6,7 +6,9 @@
     "dev": "tsx server.js",
     "build": "next build",
     "start": "NODE_ENV=production tsx server.js",
-    "lint": "next lint"
+    "lint": "next lint",
+    "apple:secret": "node scripts/generate-apple-secret.mjs",
+    "avatars:ingest": "node scripts/ingest-avatars.mjs"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.2",

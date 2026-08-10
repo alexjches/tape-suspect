@@ -8,6 +8,9 @@
    ------------------------------------------------------------------- */
 @import './vhs.css';
 
+/* Outfit's 900 cut is NOT loaded from here — it is a <link> in layout.tsx, and
+   it has to be. See the note there before moving it back. */
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -42,8 +45,15 @@
    cold colour is the kind of thing that misleads six months later.
    ------------------------------------------------------------------- */
 :root {
-  --field:      #1a0b3d;  /* the room                                   */
-  --field-wash: #2b1063;  /* radial bloom behind it                     */
+  /* The room. This is the lighter purple the dashboard was flattened to, now
+     the ground under every screen — one field the whole app sits on rather
+     than a dark room with lighter boxes floating in it. --field-wash holds the
+     same value on purpose: the radial bloom that used to lift the centre has
+     nothing to lift once the field *is* the light tone, and keeping the token
+     (rather than tearing the gradient out of the two rules that use it) is
+     what makes it one edit to put a bloom back. */
+  --field:      #2b1063;  /* the room                                   */
+  --field-wash: #2b1063;  /* bloom — flat while it matches --field      */
   --panel:      #3d1a6b;  /* raised panels, modal core                  */
   --slab:       #0d0520;  /* footer, deepest chrome                     */
 
@@ -65,27 +75,121 @@
      picks up the purple for free. */
   --bg-dark:   #2b1063;
   --bg-darker: #1a0b3d;
+
+  /* ── Emoji ──────────────────────────────────────────────────────────
+     Apple Color Emoji first, so anything running on an iPhone, iPad or Mac
+     renders Apple's own artwork — which is most of the audience for a phone
+     party game, and is the only way anyone legitimately gets it. The font is
+     proprietary and licensed to Apple hardware, so it can be *asked for* but
+     never shipped.
+
+     Everywhere else falls to `Reaction Emoji`, the bundled 3KB subset
+     declared below. Without it, Windows renders Segoe UI Emoji's flatter
+     glyphs and Android renders its own, so the same five reactions look
+     different on every machine in the lobby. */
+  --font-emoji: 'Apple Color Emoji', 'Reaction Emoji', 'Segoe UI Emoji',
+                'Noto Color Emoji', 'Android Emoji', sans-serif;
+}
+
+/* Five glyphs of Noto Color Emoji — 😂 😮 😢 🔥 👀 — and nothing else.
+   See public/fonts/README.md for why it is subset, how to regenerate it, and
+   the OFL licence it ships under.
+
+   The `unicode-range` is what keeps this safe to have in the stack: the file
+   is only ever consulted for those five codepoints, so it cannot affect any
+   other text, and browsers will not download it at all on a device whose
+   Apple Color Emoji already satisfied them.
+
+   **Tied to REACTION_EMOJI in src/types/index.ts.** Add an emoji there
+   without regenerating this and it silently renders in the platform font,
+   looking out of place beside the other four. Nothing errors. */
+@font-face {
+  font-family: 'Reaction Emoji';
+  src: url('/fonts/emoji-reactions.woff2') format('woff2');
+  font-display: swap;
+  unicode-range: U+1f440, U+1f525, U+1f602, U+1f622, U+1f62e;
 }
 
 /* ── The field ─────────────────────────────────────────────────────── */
 /* .crt-viewport is fixed and full-bleed, so it, not body, is what you
    actually see; both are set so a page rendered outside CrtShell matches. */
+
+/* ── The dot texture ───────────────────────────────────────────────────
+   Read out of `lightmode.png` by high-passing the whole frame (subtract a
+   local box mean, amplify ~16x) rather than by looking at it: at 1:1 this is
+   invisible, and two earlier attempts guessed at it and were wrong.
+
+   What the reference actually does is the thing that matters here. The dots
+   are NOT spread over the field. They are packed into **wide diagonal bands**
+   that cross the screen at ~45 degrees with plain, empty purple between them —
+   a halftone ribbon, not a tablecloth. Inside a band the dots *are* a regular
+   staggered lattice; it is the band, and the way it fades out at its own
+   edges, that stops the eye reading a grid. Scattering dots evenly and hoping
+   they look casual is exactly what does not work, at any density or alpha.
+
+   Measured, all perpendicular to the band (which is what gradient stops
+   measure, not the horizontal slice you see on screen):
+
+     band period   ~155px   (219px horizontally at 45 degrees, x cos45)
+     band width     ~55px   with ~22px of fade at each edge
+     dot pitch       14px   staggered — two dots per tile, at (0,0) and (7,7)
+     dot size         7px
+
+   135deg, not 45: a 45deg gradient's iso-lines run top-left to bottom-right
+   ("\") and the reference's bands run the other way ("/").
+
+   This needs a mask, so it needs an element — background layers cannot be
+   masked individually, and .crt-viewport's own ::before/::after are both taken
+   by vhs.css (vignette and scanlines). CrtShell renders `.field-texture` for
+   it; see the note there for why it is z-index: -1.
+
+   The alpha is the one number not copied. The reference's dots are black at
+   ~0.09 against a rgb(113,37,227) field; ours is #2b1063, where 9% is a
+   two-value drop no screen shows. 0.16 inside the band matches the *perceived*
+   step instead, and the empty gaps are what keep it subtle overall. */
+.field-texture {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle at 0 0, rgba(0, 0, 0, 0.16) 3.4px, transparent 3.9px),
+    radial-gradient(circle at 7px 7px, rgba(0, 0, 0, 0.16) 3.4px, transparent 3.9px);
+  background-size: 14px 14px, 14px 14px;
+  -webkit-mask-image: repeating-linear-gradient(
+    135deg,
+    transparent 0,
+    transparent 33px,
+    #000 55px,
+    #000 100px,
+    transparent 122px,
+    transparent 155px
+  );
+  mask-image: repeating-linear-gradient(
+    135deg,
+    transparent 0,
+    transparent 33px,
+    #000 55px,
+    #000 100px,
+    transparent 122px,
+    transparent 155px
+  );
+}
+
+/* The 40px white grid lines that used to sit under all of this are gone. They
+   were the other thing on the field with a fixed pitch, and against the
+   halftone bands they read as exactly the graph paper the bands exist to
+   avoid — the reference draws no grid at all, only dots. */
 body {
   background-color: var(--field);
-  background-image:
-    radial-gradient(circle at 50% 30%, var(--field-wash) 0%, transparent 70%),
-    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-image: radial-gradient(circle at 50% 30%, var(--field-wash) 0%, transparent 70%);
   color: var(--ink);
 }
 
 .crt-viewport {
   background-color: var(--field);
-  background-image:
-    radial-gradient(ellipse at 50% 22%, var(--field-wash) 0%, transparent 62%),
-    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
-  background-size: 100% 100%, 40px 40px, 40px 40px;
+  background-image: radial-gradient(ellipse at 50% 22%, var(--field-wash) 0%, transparent 62%);
+  background-size: 100% 100%;
 }
 
 /* ── Panels ────────────────────────────────────────────────────────── */
@@ -129,12 +233,7 @@ body {
 .lobby-item-host { color: var(--ink); }
 .lobby-item-code { color: var(--ink-mute); }
 
-/* ── Footer slab ───────────────────────────────────────────────────── */
-footer {
-  background-color: var(--slab);
-  border-top: 2px solid var(--panel);
-  color: var(--ink-mute);
-}
+/* No footer rule. CrtShell no longer renders one — see the note there. */
 
 /* vhs.css defines .home-scroll-area as `flex: 1; overflow-y: auto`, then a
    later "disable scroll on homepage" rule pins it to `height: 100vh` with
@@ -148,6 +247,78 @@ footer {
   overflow-y: auto !important;
   overflow-x: hidden;
   justify-content: flex-start;
+}
+
+/* Sit the page's content box in the middle of the viewport rather than at the
+   top of it. Every home-layout route (landing, dashboard, auth, shop) is one
+   box, and a box shorter than the screen used to leave all its slack
+   underneath.
+
+   Auto margins, *not* `justify-content: center`. An auto margin only absorbs
+   *positive* free space, so a page taller than the viewport falls back to
+   flush-top and scrolls normally; centring a scroll container instead puts the
+   top of tall content above the scrollable area, where it cannot be reached.
+   The `:not(footer)` this used to carry is gone with the footer itself. */
+.home-scroll-area > * {
+  margin-block: auto;
+}
+
+/* ── Ad rails ─────────────────────────────────────────────────────────
+   A 160x600 skyscraper in each gutter, beside the content box rather than
+   over it. Rendered by CrtShell on the `home` routes only (see AdRail.tsx).
+
+   Absolutely positioned against #crt-viewport — which is `position: fixed`,
+   so it is the containing block — and therefore *outside* `.home-scroll-area`:
+   the rail stays put while a long page scrolls under it, and the centring
+   `margin-block: auto` above keeps working, which it would not if the rails
+   were flex siblings of the content box.
+
+   Top offset clears the header (~86px) instead of centring on the viewport,
+   or a 600px unit rides up under the wordmark on a short screen. */
+.ad-rail {
+  position: absolute;
+  top: 96px;
+  bottom: 16px;
+  width: 160px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  pointer-events: auto;
+}
+
+.ad-rail-left { left: 24px; }
+.ad-rail-right { right: 24px; }
+
+/* The dev placeholder, so the reserved space is visible while laying a screen
+   out. Never renders in production — an empty dashed box on a live page is
+   worse than no rail. */
+.ad-rail-placeholder {
+  border: 2px dashed var(--border-color);
+  border-radius: 8px;
+  color: var(--ink-mute);
+  font-size: 0.7rem;
+  letter-spacing: 1px;
+  opacity: 0.5;
+}
+
+/* Whether there is a gutter at all is a width question, and the answer differs
+   by route because each one's content box is a different width. A rail appears
+   only where it genuinely fits beside the box — never over it — so both
+   thresholds are `content + 2 x (160 rail + 24 margin)`, rounded up:
+
+     landing / auth / shop   box caps at 1280  ->  1648, use 1680
+     /dashboard              box caps at  988  ->  1356, use 1400
+
+   Keyed on `.router-box` the same way the dashboard's other exceptions are.
+   Anything narrower keeps the plain screen: below these widths the rail would
+   either overlap the content or be sliced by the frame. */
+@media (min-width: 1680px) {
+  .ad-rail { display: flex; }
+}
+
+@media (min-width: 1400px) {
+  .crt-viewport:has(.router-box) .ad-rail { display: flex; }
 }
 
 /* The header logo links to the lobby router. It has to re-create
@@ -244,9 +415,20 @@ footer {
    itself is ~95px tall, so it clears the deck entirely and lands on the
    subtitle above it. The prototype at :9000 collides identically. Give the
    deck the headroom the travel needs rather than shortening the throw — the
-   cassette flying clear of the machine is the animation. */
+   cassette flying clear of the machine is the animation.
+
+   Both margins are set, and the pair is what centres it. The thing to centre
+   is the *assembly* — the ejected cassette's top edge down to the deck's
+   bottom edge — not the deck, which is only its lower half. At 76/20 that
+   assembly measured 6px under the strapline and 48px above the verdict card:
+   crowded at the top, adrift at the bottom, because the cassette sticks ~97px
+   out of the deck's top and nothing above accounted for it. Raising the top
+   margin alone just pushes the whole column down and keeps the 48. So the
+   space moves rather than grows: +20 above, -20 below, landing on 26/28
+   (measured live, not eyeballed — the numbers are invisible at 1:1). */
 .results-container .vcr-deck {
-  margin-top: 76px;
+  margin-top: 96px;
+  margin-bottom: 0;
 }
 
 /* Ready control during video playback. The watch phase renders outside
@@ -272,6 +454,1241 @@ footer {
   text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000;
 }
 
+/* ── Simulated players (testing aid) ──────────────────────────────────
+   Deliberately styled as a dashed utility strip rather than as another
+   brutal panel. It is a test tool sitting inside a game screen, and it
+   should look like scaffolding so nobody mistakes it for a feature of the
+   round — the same reason the bots themselves are badged SIM in the roster
+   and carry "(BOT)" in their names. */
+.sim-players-bar {
+  margin-top: 16px;
+  padding: 10px 14px;
+  border: 2px dashed var(--ink-mute);
+  border-radius: 10px;
+  background: rgba(13, 5, 32, 0.45);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sim-players-label {
+  color: var(--neon-yellow);
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+
+/* .btn-brutal is sized for the primary actions on this screen; these two sit
+   beside ROLL TAPE and must not compete with it. */
+.sim-players-btn {
+  font-size: 0.75rem;
+  padding: 6px 12px;
+  margin: 0;
+}
+
+.sim-players-note {
+  color: var(--ink-mute);
+  font-size: 0.65rem;
+  flex: 1;
+  min-width: 180px;
+}
+
+@media (max-width: 560px) {
+  .sim-players-bar { gap: 8px; }
+  .sim-players-note { min-width: 100%; }
+}
+
+/* ── Live reactions during the video (spec §5) ────────────────────────
+   Bottom-right corner of the player, opposite the centred ready bar. The
+   watch phase renders outside CrtShell, so nothing else is competing for
+   this corner — the REC badge belongs to .camcorder-hud, which is inside
+   the frame and not on screen here.
+
+   z-index sits above .watch-ready-bar's 30 so an open emoji row is never
+   half-behind the ready button on a narrow screen. */
+.reaction-bar {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.reaction-toggle {
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+  border: 3px solid var(--border-color);
+  border-radius: 50%;
+  background: var(--neon-yellow);
+  box-shadow: 0 3px 0 var(--border-color);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  /* The button sits on video, which on a touch device means a long-press
+     offers to save the frame behind it. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.reaction-toggle:hover { transform: translateY(-1px); box-shadow: 0 4px 0 var(--border-color); }
+.reaction-toggle:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--border-color); }
+.reaction-toggle:focus-visible { outline: 3px solid var(--neon-cyan); outline-offset: 3px; }
+
+/* Collapses to the right, into the toggle. Width is not animated — the row
+   is five fixed-width buttons, so a scaleX from the right edge gets the same
+   read for free and never reflows the video underneath it. */
+.reaction-row {
+  display: flex;
+  gap: 8px;
+  transform-origin: right center;
+  transform: scaleX(0.4);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.18s ease-out, opacity 0.18s ease-out;
+}
+
+.reaction-bar.open .reaction-row {
+  transform: scaleX(1);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.reaction-emoji-btn {
+  width: 46px;
+  height: 46px;
+  border: 3px solid var(--border-color);
+  border-radius: 10px;
+  background: rgba(13, 5, 32, 0.88);
+  box-shadow: 0 2px 0 var(--border-color);
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s ease, background 0.1s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.reaction-emoji-btn:hover { background: var(--panel); transform: translateY(-3px); }
+.reaction-emoji-btn:active { transform: translateY(1px) scale(0.94); }
+.reaction-emoji-btn:focus-visible { outline: 3px solid var(--neon-cyan); outline-offset: 2px; }
+
+/* Where the floats rise. A fixed column above the toggle rather than the
+   full screen, so a busy lobby stays in its corner instead of drifting
+   across the picture everyone is trying to read. */
+.reaction-float-layer {
+  position: absolute;
+  right: 24px;
+  bottom: 84px;
+  /* Narrower than it was: the column used to carry an emoji plus a name and
+     is now just the glyph, so it needs room to drift, not room to read. */
+  width: 96px;
+  height: 320px;
+  z-index: 39;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.reaction-float {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  animation: reaction-rise 2.6s ease-out forwards;
+}
+
+.reaction-float-emoji {
+  /* Bigger now that it floats alone — with no name beside it the glyph is
+     the whole message, and at 1.7rem it read as an afterthought. */
+  font-size: 2.4rem;
+  line-height: 1;
+  display: block;
+  /* No panel behind any of this: the backdrop is whatever the tape is
+     showing, so contrast has to come from the glyph itself. */
+  filter: drop-shadow(2px 2px 0 rgba(0, 0, 0, 0.75));
+}
+
+/* Apple's set where it exists, the platform's elsewhere — see --font-emoji.
+   Applied to the picker and the toggle too, so what you tap and what floats
+   up are the same artwork. */
+.reaction-float-emoji,
+.reaction-emoji-btn,
+.reaction-toggle {
+  font-family: var(--font-emoji);
+}
+
+@keyframes reaction-rise {
+  0%   { opacity: 0; transform: translate(0, 10px) scale(0.6); }
+  12%  { opacity: 1; transform: translate(0, 0) scale(1); }
+  75%  { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--drift, 0px), -280px) scale(0.85); }
+}
+
+/* Reactions are decoration over content nobody can pause. Honour the OS
+   setting: still show that they arrived, just without the travel.
+
+   The rise is not only decoration though — it is also what stops two
+   reactions occupying the same pixel, since every float is pinned to the
+   bottom-right of the layer. Take the animation away and they would all
+   land on top of each other. So reduced motion swaps the mechanism rather
+   than just disabling it: the floats leave absolute positioning and stack
+   as a bottom-up list, then fade. */
+@media (prefers-reduced-motion: reduce) {
+  .reaction-float-layer {
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: flex-end;
+    justify-content: flex-start;
+    gap: 4px;
+  }
+
+  .reaction-float {
+    position: static;
+    animation: reaction-fade 2.6s linear forwards;
+  }
+
+  .reaction-row { transition: opacity 0.18s ease-out; transform: none; }
+  .reaction-bar.open .reaction-row { transform: none; }
+}
+
+@keyframes reaction-fade {
+  0%, 80% { opacity: 1; }
+  100%    { opacity: 0; }
+}
+
+/* ── Landing Profile panel: character, name, START ─────────────────────
+   The panel used to be a stack of copy above two full-width doors. It is the
+   identity step itself now, so the character gets the middle of the panel and
+   the name row sits directly under it.
+
+   .play-setup-panel (vhs.css) is `justify-content: space-between` against a
+   460px min-height, which would push the character and the name row to
+   opposite ends of the panel. One flex child taking the leftover space and
+   distributing it is what keeps the group placed without editing vhs.css —
+   and note that *padding* cannot do this job: the panel is only ~55px taller
+   than its contents, so padding grows the panel instead of shifting anything
+   inside it.
+
+   The character and the name row are one pair, set close together and hung
+   from the top of the space under the title rather than distributed through
+   it. `space-evenly` put a third of the slack between them, which reads as
+   two separate things; all the slack now falls below the pair, which sits it
+   high in the card under the heading it belongs to.
+
+   25px is the distance space-evenly used to produce between the two, kept
+   deliberately — the pair moved, the pair did not change shape. The 14px of
+   top padding lands on top of the title's own 12px bottom margin, so there is
+   26px of clear air under the heading and ~36px under the input: high in the
+   card, which is the point. */
+.access-identity {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 25px;
+  width: 100%;
+  padding: 14px 0 0;
+}
+
+/* The lift itself. This panel is sized by its own contents, so padding the
+   group only grows the panel and moves nothing; the space to reclaim is the
+   title's 24px bottom margin (vhs.css), which is what put the character
+   noticeably below the middle of the card. */
+.play-setup-panel .gartic-panel-title {
+  margin-bottom: 12px;
+}
+
+/* No nudge. This used to carry `transform: translateX(-13px)`, centring the
+   character *plus* the reroll button that hangs 26px off its right edge (see
+   .character-slot .btn-circular below) — i.e. centring the visual mass. It
+   reads as an error: the button is a control clipped to the artwork's corner,
+   not part of the portrait, so the eye centres on the character and sees it
+   sitting 13px left of the panel's midline. The character is what is centred
+   now, and the button hangs off it. It is absolutely positioned, so it costs
+   the layout nothing either way — this was only ever an optical correction,
+   and it corrected in the wrong direction. */
+
+/* 440, not 380. The button is the variable-width half of this pair — a signed-in
+   player with unsaved edits gets "SAVE & START ⏵" at 172px against "START ⏵"'s
+   96 — and the input takes the difference out of its own width. Measured at 380:
+   a 20-character name (the maxLength) needed 237px of text in a 198px field, so
+   the name clipped at exactly the length the field still accepts. 440 leaves
+   ~258px, and the panel is 640px wide, so the row has the room to spare. */
+.access-name-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
+  max-width: 440px;
+}
+
+/* Outfit rather than the display face: Lilita One is a heavy poster type with
+   very tight counters, which is right on a button of four words and turns a
+   typed name into a solid block. This is the one place on the screen the
+   player has to *read back* what they entered, so it gets the UI sans.
+   18px, and never below 16px: iOS zooms the viewport when it focuses an
+   input smaller than that. */
+.access-name-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 18px;
+  text-align: center;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.access-start-btn {
+  margin: 0;
+  flex-shrink: 0;
+  font-family: var(--font-brutal);
+  font-size: 1.1rem;
+  padding: 10px 20px;
+}
+
+.access-start-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* "SAVE & START ⏵" is nearly twice the width of "START ⏵", and the row is a
+   flex pair with the input taking the slack — so the button growing squeezes
+   the field rather than the panel. `white-space: nowrap` keeps the label on one
+   line and `flex-shrink: 0` above already stops the button collapsing; the
+   input's own `min-width: 0` is what lets it give the space up. */
+.access-start-btn {
+  white-space: nowrap;
+}
+
+/* The signed-in caption under the character. A second `.avatar-helper-text`,
+   dimmer than the first: the line above it is an instruction and this one is
+   context, so it must not read as equally loud. */
+.access-account-note {
+  margin-top: 2px;
+  opacity: 0.7;
+}
+
+/* Save failures on the way into a round. Sits under the name row rather than
+   at the top of the panel, because it is about the button directly above the
+   space it appears in. */
+.access-error {
+  margin-top: 10px;
+  padding: 8px 12px;
+  /* Matches .access-name-row, so the banner is exactly as wide as the row it
+     is reporting on. */
+  max-width: 440px;
+  border: 2px solid var(--neon-magenta);
+  border-radius: 8px;
+  color: var(--neon-magenta);
+  text-align: center;
+}
+
+/* The returning-player door, in the header rather than in the Profile panel.
+   It is an <a> wearing .btn-brutal, so it needs the two things a button gets
+   for free: no underline, and a size that reads as secondary next to START.
+   Deliberately smaller than a .btn-brutal default (1.15rem/12px 24px) — it
+   sits beside a 2.2rem wordmark and must not out-shout it. */
+.header-signin-btn {
+  font-size: 0.95rem;
+  padding: 8px 18px;
+  text-decoration: none;
+}
+
+/* The account glyph. Greyed rather than the button's black: it stands for the
+   account you have not signed into yet, so it should read as an empty slot
+   next to live text, not as a second piece of label. The ink is the roster's
+   own #012442, which is what keeps it in the same family as the characters. */
+.header-signin-btn svg {
+  color: #012442;
+  opacity: 0.42;
+  flex-shrink: 0;
+}
+
+/* ── /dashboard: the three cards ───────────────────────────────────────
+   The router is a decision, not a form: browse, punch in a code, or host.
+   Laid out from "dashboard page.png" — three tall portrait cards side by
+   side, each a saturated illustrated tile with its title set large across
+   the bottom. The reference gives its middle card extra height because that
+   is its one primary action; ours are three peers, so they stay equal and
+   the colour does the separating. (The reference's fourth, leftmost card is
+   the player's own profile — that lives on the landing page here, so it is
+   deliberately not reproduced.) */
+/* The router *does* sit on a panel, and it is the landing page's panel — same
+   `.gartic-main-box` fill, 4px rim, 24px radius and 12px drop, so the two
+   screens a player sees first are made of the same thing and the three doors
+   sit *on* something rather than floating on the field. Only the padding is
+   this route's own: the landing box reserves 64px at the top to clear the
+   floating logo the prototype hangs over it, and there is no logo here.
+
+   (This reverses an earlier pass that dissolved the box to make the router one
+   flat field. The fill is near-identical to `--field` either way — the panel
+   reads by its rim and its drop, exactly as the landing box does.) */
+.gartic-main-box.router-box {
+  /* The panel is deliberately roomier than the doors need: the extra 24px on
+     every side is what makes it read as a frame the cards sit inside rather
+     than as a rim drawn tight around them. The wrapper's cap moves with it
+     (900 -> 948 in dashboard/page.tsx) so the cards keep their width — grow
+     the padding alone and the three tracks just get narrower. The sides carry
+     more than the top and bottom on purpose — that is what the extra width is,
+     since the doors themselves stay put. */
+  padding: 52px 76px 48px 76px;
+  min-height: 0;
+}
+
+.deck-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  align-items: stretch;
+}
+
+.deck-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  width: 100%;
+  min-height: 380px;
+  padding: 0;
+  overflow: hidden;
+  text-align: left;
+  border: 4px solid var(--border-color);
+  border-radius: 20px;
+  box-shadow: 0 6px 0px var(--border-color);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.deck-card:hover:not(:disabled):not(.deck-card-static) {
+  transform: translateY(-3px);
+  box-shadow: 0 9px 0px var(--border-color);
+}
+
+.deck-card:active:not(:disabled):not(.deck-card-static) {
+  transform: translateY(3px);
+  box-shadow: 0 2px 0px var(--border-color);
+}
+
+.deck-card:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* Here the fill *is* the accent — the reference's cards are full-bleed
+   colour, and three of them in a row read as three choices rather than as
+   one busy panel because each owns its own tile. */
+.deck-card.cyan { background: linear-gradient(165deg, #00f0ff 0%, #0072d6 60%, #4a1d9e 100%); }
+.deck-card.magenta { background: linear-gradient(165deg, #ff5bb0 0%, #ff0077 55%, #6a0f5e 100%); }
+.deck-card.yellow { background: linear-gradient(165deg, #ffee00 0%, #ff9d00 60%, #c22f00 100%); }
+
+/* The code card holds an input, so it is a <div> and must not lift and
+   press as though the whole tile were one button. */
+.deck-card-static { cursor: default; }
+
+.deck-card-art {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 70px;
+  /* The reference scatters a confetti texture behind its illustration; a
+     dot grid is the same trick and costs no asset. */
+  background-image: radial-gradient(rgba(255, 255, 255, 0.28) 2px, transparent 2px);
+  background-size: 22px 22px;
+  background-position: 6px 6px;
+}
+
+/* Overlapped rather than spaced: a crowd, not a row of portraits. The
+   characters are the game's own roster art (public/avatars), so the card
+   illustration and the player you just picked are the same drawing. */
+.deck-card-crowd {
+  display: flex;
+  align-items: flex-end;
+  filter: drop-shadow(3px 4px 0 rgba(0, 0, 0, 0.45));
+  /* Scaled rather than sized up, because <Avatar size> is an inline height
+     that no media query can reach — the stacked cards are half the height
+     and need the smaller art, so the base size is theirs and the tall
+     desktop card takes the transform. */
+  transform: scale(1.15);
+}
+
+.deck-card-crowd img { margin: 0 -18px; }
+.deck-card-crowd img:nth-child(2) { position: relative; z-index: 1; }
+
+/* An emoji prop for the two cards that are one character alone, so they do
+   not read as emptier than the crowd. */
+.deck-card-glyph {
+  position: absolute;
+  top: 26px;
+  right: 24px;
+  font-size: 2.4rem;
+  line-height: 1;
+  transform: rotate(14deg);
+  filter: drop-shadow(2px 3px 0 rgba(0, 0, 0, 0.4));
+}
+
+/* Sits over the art on a scrim, because white type on a mid-tone gradient
+   is legible in the mock-up and marginal over an actual illustration. */
+.deck-card-label {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px 18px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.35) 65%, transparent 100%);
+}
+
+.deck-card-title {
+  font-family: var(--font-brutal);
+  font-size: 2.1rem;
+  line-height: 0.98;
+  color: #fff;
+  text-shadow: 3px 3px 0px rgba(0, 0, 0, 0.75);
+  letter-spacing: 0.5px;
+}
+
+.deck-card-note {
+  font-family: var(--font-osd);
+  font-size: 0.72rem;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.router-code-entry {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.router-code-input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  /* No rim. The field sits inside a full-bleed magenta card, so a 3px black
+     stroke drew a second hard edge a few pixels in from the card's own — two
+     outlines around one thing. The white fill is what marks it as a field. */
+  border: none;
+  border-radius: 6px;
+  background: #fff;
+  color: #000;
+  /* The landing page's name field (.access-name-input) in face and size —
+     Outfit, 18px, centred — because both are the one line of text a player
+     types on the way in, and the 18px clears the 16px floor below which iOS
+     zooms the viewport on focus.
+
+     The weight is where the two part company, and deliberately: **900, the
+     heaviest Outfit has**. A name is a word you read; a code is six characters
+     you transcribe one at a time off someone else's screen, and the weight is
+     what separates B from 8 and O from 0 at a glance. It is a real cut rather
+     than a synthesised bold — a faux-bold smears exactly the counters that make
+     those pairs tellable apart, which would be worse than not bolding at all —
+     but only because of the extra `@import` at the top of this file. vhs.css
+     stops at 800, and against a family that stops at 800 this line renders as
+     800 and looks like nothing happened. Check both together.
+
+     `text-transform` stays: the value is uppercased on change anyway, and this
+     keeps a pasted lowercase code looking like a code. */
+  font-family: var(--font-ui);
+  font-weight: 900;
+  font-size: 18px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.router-code-input::placeholder {
+  color: rgba(0, 0, 0, 0.38);
+}
+
+.router-code-btn {
+  margin: 0;
+  padding: 0 14px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.router-browse {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 300px;
+}
+
+.router-browse-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.router-browse-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 52vh;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+/* ── Lobby: roster left, options right, actions across the bottom ──────
+   Overrides vhs.css's 1fr/320px split, which put the settings in a narrow
+   sidebar. The options are now the main event of this screen — the genre
+   grid is what most lobbies actually come here to set — so the roster takes
+   the fixed column instead.
+
+   .lobby-actions spans both, which is what keeps ROLL TAPE on one line at
+   the foot of the screen rather than buried under whichever column is
+   taller.
+
+   The height chain matters and is easy to break: .view-panel.active-view is
+   a flex column that owns the page scroll, so the grid claims the leftover
+   space (flex: 1) and hands its first row `minmax(0, 1fr)`. That zero
+   minimum is the load-bearing part — a grid row's default `min-height: auto`
+   refuses to shrink below its content, so the panels would grow past the
+   viewport and push the action bar off the bottom of the screen instead of
+   scrolling inside themselves. Which is exactly what happened first. The
+   same reasoning gives every panel and scroller a min-height: 0. */
+/* The grid is also the outer box, and its skin is `.gartic-main-box`'s —
+   the same fill, the same 4px rim, the same 24px radius, the same 12px drop.
+   The landing page, /dashboard and the lobby are the three screens that are
+   "one box on the field", and they are now one object rendered three times
+   rather than three boxes that happen to sit in the same place.
+
+   This replaces a lavender 3px stroke over a 55px soft shadow, on the
+   argument that a hard rim and an offset shadow make a sticker and that the
+   treatment reads as a mistake at the size of a whole screen. It doesn't: the
+   landing box is the same size class and has carried exactly this since it was
+   built. What made the lobby read wrong was being the only screen doing
+   something else. */
+.lobby-layout {
+  grid-template-columns: 340px 1fr;
+  grid-template-rows: minmax(0, 1fr) auto;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 1180px;
+  margin: 10px auto 18px;
+  border: 4px solid var(--border-color);
+  border-radius: 24px;
+  background: rgba(43, 16, 99, 0.85);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 12px 0px var(--border-color);
+}
+
+.lobby-panel {
+  background: rgba(26, 8, 50, 0.9);
+  border: 4px solid var(--border-color);
+  border-radius: 18px;
+  box-shadow: 0 6px 0px var(--border-color);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.lobby-panel-title {
+  font-family: var(--font-brutal);
+  font-size: 1.4rem;
+  letter-spacing: 1px;
+  text-align: center;
+  color: var(--neon-green);
+  -webkit-text-stroke: 1px #000;
+  margin-bottom: 14px;
+}
+
+.lobby-roster-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 26px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* The consoles overhang their box by 12px at the top (avatar) and carry a
+     host tag below, so the scroller needs slack on both ends or the first
+     and last are clipped mid-badge. */
+  padding: 16px 6px 14px;
+
+  /* Two things at once. The negative margin bleeds the scroller out through
+     the panel's 18px side padding so the bar rides the panel edge instead of
+     sitting against the consoles; the extra 8px of left padding then puts
+     back what the bar takes off the right, so the consoles stay centred on
+     the *panel* rather than on the narrower content box the bar leaves
+     behind. Both numbers are load-bearing: change the panel padding or the
+     scrollbar width below and this goes crooked again. */
+  margin-left: -18px;
+  margin-right: -18px;
+  padding-left: calc(6px + 18px + 8px);
+  padding-right: calc(6px + 18px);
+  /* Hold the 8px whether or not the list currently overflows, so a lobby
+     doesn't shift sideways by 4px as the fourth player joins. */
+  scrollbar-gutter: stable;
+}
+
+/* Pinned to a known width because the centring above has to add it back by
+   hand — a platform-default bar is 15-17px on Windows and 0 on an overlay
+   scrollbar, and the consoles would sit off-centre by half of whatever it
+   happened to be. */
+.lobby-roster-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.lobby-roster-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.lobby-roster-list::-webkit-scrollbar-thumb {
+  background: rgba(157, 110, 255, 0.5);
+  border-radius: 4px;
+}
+
+/* A .vhs-player is a fixed 220px in vhs.css. In a 340px column that leaves a
+   ragged 60px of dead space either side, so let it fill the column — the
+   internals are all flex and scale cleanly. */
+.lobby-roster-list .vhs-player {
+  width: 100%;
+  max-width: 280px;
+  flex-shrink: 0;
+}
+
+/* Tab strip, per the reference lobby: the inactive tab sits behind the
+   active one rather than beside it. */
+.lobby-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.lobby-tab {
+  flex: 1;
+  padding: 10px 12px;
+  border: 3px solid var(--border-color);
+  border-radius: 12px 12px 0 0;
+  background: rgba(13, 5, 32, 0.75);
+  color: var(--ink-mute);
+  font-family: var(--font-brutal);
+  font-size: 1rem;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.lobby-tab:hover { color: #fff; }
+
+.lobby-tab.active {
+  background: rgba(43, 15, 78, 0.95);
+  color: var(--neon-green);
+  border-bottom-color: transparent;
+}
+
+/* The scrollbar comes out of *both* sides, or the mode grid sits left of
+   centre. This scroller overflows on every lobby (ten mode cards do not fit),
+   so the global 8px bar plus the 4px this used to hold on the right alone took
+   12px off the right edge and nothing off the left: the cards started flush
+   against the panel's inner edge while the tab strip above them — which does
+   not scroll — still spanned the full width, and the grid read as shoved left
+   out of the panel. Measured in a headed browser, not headless: headless
+   Chromium draws overlay scrollbars that take no layout space, so the fault is
+   invisible there and the gaps measure 0 / 0.
+
+   `both-edges` mirrors the reservation instead of hand-padding the other side,
+   which is what keeps it right when the bar is an overlay (reserves nothing,
+   both sides still equal) and when a short tab body does not scroll at all —
+   switching tabs must not shift the panel sideways. Same fault the roster list
+   fixes at line ~932; that one bleeds out to the panel edge because it is a
+   full-height list, this one stays inside. */
+.lobby-tab-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-inline: 4px;
+  scrollbar-gutter: stable both-edges;
+}
+
+/* ── Mode picker ───────────────────────────────────────────────────────
+   The modes are grouped by *style of round*, not listed flat: a video mode
+   and a prompt mode are two different games, and a lobby has to be able to
+   see which kind it is choosing before it reads the individual cards. The
+   heading is the style; the rule beside it carries the eye across so the
+   section reads as a divider rather than as a label on the first card.
+   ------------------------------------------------------------------- */
+.mode-group + .mode-group {
+  margin-top: 8px;
+  padding-top: 7px;
+}
+
+.mode-group-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-brutal);
+  font-size: 0.9rem;
+  letter-spacing: 2px;
+  color: var(--neon-green);
+  margin-bottom: 1px;
+}
+
+/* Fills whatever the label leaves, so the line always reaches the far edge. */
+.mode-group-rule {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(157, 110, 255, 0.3);
+}
+
+.mode-group-blurb {
+  font-size: 0.66rem;
+  line-height: 1.25;
+  letter-spacing: 0.8px;
+  color: var(--ink-mute);
+  margin: 0 0 6px;
+}
+
+/* Three across holds the icon and a two-word name without wrapping; below that
+   the grid drops to two and then one (MOBILE block). Both groups use the same
+   track width, so a short second row lines up with the column above it rather
+   than stretching to fill. */
+.mode-grid {
+  display: grid;
+  /* minmax(0, …) rather than a bare 1fr: a bare fr track floors at its content,
+     so one long mode name would take a wider column than its two neighbours and
+     the cards would stop being the same size. */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.mode-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  /* width : height = 1.8 : 1, i.e. landscape. `aspect-ratio` takes
+     width/height, so that is `1.8 / 1` — it reads the same way round as the
+     spec here, but check the orientation of the rendered card rather than the
+     number: a portrait tile shipped once as `4 / 6` when landscape was meant.
+
+     Width is not set: the three even `1fr` tracks on `.mode-grid` decide it and
+     the ratio takes the height from there, so a card is ~234px wide and ~130px
+     tall. Four rows of that plus the group headings overflow
+     `.lobby-tab-body`, and the grid scrolls past it as it is meant to — the
+     reference scrolls too, with its bottom row cut mid-card, which is what
+     signals there is more below. Preserve that the cut is *visible*, not that
+     there is no cut.
+
+     If the tiles want to be smaller, change the column count rather than this
+     ratio — `.mode-grid` is `repeat(3, minmax(0, 1fr))` and every card follows
+     it. */
+  padding: 10px;
+  aspect-ratio: 1.8 / 1;
+  /* Black rather than --border-color, in both themes: the mode grid is the one
+     place a card has to read as a discrete pressable thing against whatever is
+     behind it, and light mode's lilac --border-color let the tiles dissolve
+     into the panel. The offset shadow follows the border — a black outline over
+     a lilac shadow reads as two different objects stacked. */
+  border: 3px solid #000;
+  border-radius: 8px;
+  background: rgba(13, 5, 32, 0.75);
+  box-shadow: 0 4px 0px #000;
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+}
+
+.mode-card:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0px #000;
+}
+
+/* Selection is an outline, not a fill: the card keeps its own background and
+   takes the green from lightmode.png (#a3ffb9, the same mint that marks the
+   chosen preset there and sets its headings). A magenta fill re-coloured the
+   whole tile and the icon sat on it rather than in the grid; the ring reads as
+   "this one" while the ten cards still read as one set.
+
+   The ring has to close. `box-shadow: 4px 4px` is an *offset* shadow — it shows
+   below and to the right and nowhere else, so a green drop shadow left the top
+   and left edges of the selected card looking unmarked. `0 0 0 3px` spreads
+   evenly on all four sides instead, and with the black border kept underneath
+   the green sits outside it as a complete band. Losing the drop shadow on the
+   chosen card is the point: it is pressed. */
+.mode-card.active {
+  box-shadow: 0 0 0 3px #a3ffb9;
+}
+
+/* The hover rule above is more specific than `.active`, so without this the
+   ring would revert to the black drop shadow the moment the pointer landed on
+   the chosen card. Hovering the current mode keeps the ring and drops the
+   lift — there is nothing to press. */
+.mode-card.active:hover:not(:disabled) {
+  transform: none;
+  box-shadow: 0 0 0 3px #a3ffb9;
+}
+
+/* A non-host still needs to read which mode is set, so the disabled state
+   drops the affordance without dropping the selection. */
+.mode-card:disabled { cursor: default; }
+.mode-card:disabled:not(.active) { opacity: 0.55; }
+
+.mode-card-icon {
+  /* Fills the tile, as the illustration does in the reference. Sized against
+     the landscape 1.8:1 card, which leaves ~104px of content box at three
+     columns: this glyph plus a two-line name is the worst case and clears it. */
+  font-size: 3.6rem;
+  line-height: 1;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.mode-card-name {
+  font-family: var(--font-brutal);
+  font-size: 0.85rem;
+  letter-spacing: 0.6px;
+  line-height: 1.1;
+  text-align: center;
+  flex-shrink: 0;
+  padding-bottom: 2px;
+  /* A white outline, so the label sits on the card rather than in it. Two
+     things this depends on.
+
+     The glyph itself has to be dark in *both* themes. The label used to be
+     #fff on the dark card, and a white outline on white text is not an outline
+     — the first pass rendered the whole GAMES group as unreadable white mush.
+     The ink is the light theme's card ink, and the halo is what carries it on
+     the dark card.
+
+     And it is eight 1px shadows rather than -webkit-text-stroke: that property
+     draws the stroke *inside* the glyph and eats a light font from both sides,
+     which at 0.85rem closes up the counters. Pure #fff on purpose — it has to
+     be brighter than the card's own fill, and the light theme's card bottoms
+     out at #d4c4fc. */
+  color: #2f0968;
+  text-shadow:
+    -1px -1px 0 #fff, 0 -1px 0 #fff, 1px -1px 0 #fff,
+    -1px 0 0 #fff, 1px 0 0 #fff,
+    -1px 1px 0 #fff, 0 1px 0 #fff, 1px 1px 0 #fff;
+}
+
+/* ── Prompt round: the card you are dealt ──────────────────────────────
+   The watch phase for the Words and Questions modes. Deliberately one card
+   centred on the panel with nothing else on screen: it is the only thing
+   this phase is for, and anything beside it is something to look at instead
+   of thinking of an answer.
+
+   Nothing here may vary with the *content* of the card. Crew and suspect are
+   looking at the same component with different text, and a style that
+   responded to the text — a length breakpoint, a colour by keyword — would
+   be a role tell in the one place the game cannot afford one.
+   ------------------------------------------------------------------- */
+.prompt-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 20px;
+}
+
+.prompt-card {
+  width: 100%;
+  max-width: 620px;
+  padding: 30px 28px;
+  border: 4px solid var(--border-color);
+  border-radius: 20px;
+  background: rgba(26, 8, 50, 0.94);
+  box-shadow: 0 8px 0px var(--border-color);
+  text-align: center;
+  /* Dealt onto the table rather than appearing: the tape modes get an
+     insertion animation, and arriving with no transition at all makes the
+     prompt modes feel like the cheaper half of the game. */
+  opacity: 0;
+  transform: translateY(14px) rotate(-1.5deg);
+  transition: opacity 0.35s ease, transform 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.3);
+}
+
+.prompt-card.dealt {
+  opacity: 1;
+  transform: none;
+}
+
+.prompt-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  letter-spacing: 2px;
+  color: var(--neon-cyan);
+  margin-bottom: 18px;
+}
+
+.prompt-card-text {
+  font-family: var(--font-brutal);
+  font-size: 2.6rem;
+  line-height: 1.15;
+  letter-spacing: 1px;
+  color: var(--neon-yellow);
+  -webkit-text-stroke: 2px #000;
+  /* A word is one or two tokens and wants to fill the card; a question is a
+     sentence and would be shouting at the same size. The switch is on the
+     *mode*, which both halves of the pair share — never on the text. */
+  word-break: break-word;
+}
+
+.prompt-card-text.question {
+  font-size: 1.9rem;
+  line-height: 1.3;
+  -webkit-text-stroke: 1px #000;
+}
+
+.prompt-card-note {
+  font-size: 0.7rem;
+  letter-spacing: 1px;
+  line-height: 1.6;
+  color: var(--ink-mute);
+  margin-top: 20px;
+}
+
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.prompt-actions .btn-brutal {
+  margin: 0;
+}
+
+/* ── CUSTOM SETTINGS tab ───────────────────────────────────────────────
+   The other half of the same panel, so it is built out of the same parts as
+   .mode-card above: dark fill, 3px black border, offset shadow, Lilita label,
+   neon-magenta for the chosen option. It used to be vhs.css's `.osd-menu` —
+   a flat #0000aa box with white hairlines and the OSD monospace, which is a
+   literal VCR menu and reads as pasted in from another program next to the
+   consoles and the mode grid.
+
+   .osd-menu is still right where it is genuinely an on-screen display, so it
+   stays in vhs.css and in the shop / results / video-setup panels that use it.
+   ------------------------------------------------------------------- */
+/* Custom content: the last thing in the GAME MODE tab, under every group.
+   Borrows the settings tab's `.setting-row` for its switch on purpose — it is
+   one row with two states, and building a second control language for it would
+   say it is a different kind of thing than the rows next door. The 6px right
+   padding is the same allowance `.settings-list` makes, so the row's offset
+   shadow is not cut off against the scroller's edge. */
+.custom-content-panel {
+  margin-top: 18px;
+  padding: 0 6px 6px 0;
+}
+
+.custom-content-panel .setting-hint {
+  margin: 6px 4px 0;
+}
+
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* The rows carry a 4px offset shadow, which is outside the box and would be
+     cut off against the scroller's edge on the last one. */
+  padding: 0 6px 6px 0;
+}
+
+/* Sized to fit: six rows plus two hints have to clear .lobby-tab-body without
+   scrolling at 900px, which is what the GAME MODE grid next door manages. At
+   12px padding they did not, and the BALLOT row fell off the bottom. */
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  border: 3px solid var(--border-color);
+  border-radius: 14px;
+  background: rgba(13, 5, 32, 0.75);
+  box-shadow: 0 4px 0px var(--border-color);
+}
+
+.setting-label {
+  font-family: var(--font-brutal);
+  font-size: 0.95rem;
+  letter-spacing: 1px;
+  color: #fff;
+}
+
+/* What a non-host sees in place of the control. */
+.setting-value {
+  font-family: var(--font-brutal);
+  font-size: 0.95rem;
+  letter-spacing: 1px;
+  color: var(--neon-yellow);
+}
+
+.setting-stepper,
+.setting-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* One height for both control types, so every row is the same height and the
+   list reads as a stack rather than as six cards that each grew to fit. A
+   choice button sized by padding alone came out ~6px taller than the fixed
+   square stepper, which is small enough to look accidental and big enough to
+   see. inline-flex because a fixed height needs something to centre against. */
+.setting-step-btn,
+.setting-choice-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  font-family: var(--font-brutal);
+  font-size: 0.9rem;
+  letter-spacing: 1px;
+  color: #fff;
+  background: rgba(43, 15, 78, 0.9);
+  border: 3px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: 0 3px 0px var(--border-color);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+}
+
+.setting-step-btn {
+  width: 32px;
+  padding: 0;
+  line-height: 1;
+  font-size: 1.2rem;
+}
+
+.setting-choice-btn {
+  padding: 0 12px;
+}
+
+.setting-step-btn:hover:not(:disabled),
+.setting-choice-btn:hover:not(:disabled):not(.active) {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 0px var(--border-color);
+}
+
+/* Pressed in — but *without* .mode-card's translate. Those cards are 140px
+   tall and alone in their cell, so sliding the chosen one 2px reads as depth;
+   these sit shoulder to shoulder in a pair, where the same slide just puts one
+   label lower than its neighbour and reads as misalignment. Dropping the
+   offset shadow for an inner one says pressed without moving anything. */
+.setting-choice-btn.active {
+  background: var(--neon-magenta);
+  color: #fff;
+  box-shadow: inset 2px 2px 0px rgba(0, 0, 0, 0.4);
+}
+
+.setting-step-btn:disabled,
+.setting-choice-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: 0 3px 0px var(--border-color);
+}
+
+/* A disabled option still has to read as *the selected one* where it is —
+   only the 2-suspects lock is both at once, and it never is. */
+.setting-choice-btn:disabled.active {
+  opacity: 0.7;
+}
+
+.setting-stepper-value {
+  font-family: var(--font-brutal);
+  font-size: 1.05rem;
+  color: var(--neon-yellow);
+  min-width: 24px;
+  text-align: center;
+}
+
+/* The notes under a row: same small OSD face the rest of the app uses for
+   captions (deck-card-note, lobby-actions-note), just not in a blue box. */
+.setting-hint {
+  font-family: var(--font-osd);
+  font-size: 0.7rem;
+  letter-spacing: 1px;
+  line-height: 1.5;
+  color: var(--ink-mute);
+  margin: -4px 4px 2px;
+}
+
+.setting-hint.muted { opacity: 0.65; }
+
+.lobby-actions {
+  grid-column: 1 / -1;
+  padding-top: 4px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.lobby-action-btn {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* INVITE is off the neon palette and near-white, as in lightmode.png. It stands
+   next to LEAVE and ROLL TAPE, which are the two buttons that end or start a
+   round; a third saturated colour beside them made the row read as three equal
+   decisions. This is a colour class in vhs.css's sense — .btn-brutal supplies no
+   background or shadow of its own, so replacing `cyan` means supplying all
+   three here. */
+.lobby-invite-btn {
+  background: linear-gradient(180deg, #ffffff 0%, #e6dcff 100%);
+  color: #2f0968;
+  box-shadow: 0 4px 0px var(--border-color);
+}
+
+/* The room code rides on the INVITE button instead of the old sleeve card —
+   the thing you read it for is the thing you press. */
+.lobby-invite-code {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 1.1rem;
+  /* Its own tracking, not the 0.5px the name fields use — this is a code read
+     character by character, and the wide set is what makes it one. */
+  letter-spacing: 3px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+/* The chip was a dark patch for light ink on a cyan button. On the white one it
+   has to go the other way or the code disappears into it. */
+.lobby-invite-btn .lobby-invite-code {
+  background: rgba(47, 9, 104, 0.13);
+}
+
+.lobby-actions-note {
+  font-size: 0.75rem;
+  letter-spacing: 1px;
+}
+
 /* REC lives bottom-right, not top-left. .camcorder-hud is a full-bleed
    column with the row as its only flow child, so margin-top pushes the row
    down and flex-end pushes the badge across. The extra right margin clears
@@ -289,4 +1706,2727 @@ footer {
    — 24px of .camcorder-hud padding plus the badge itself. */
 .view-panel.active-view {
   padding-bottom: 56px;
+}
+
+/* ── Fake Artist: the shared canvas ───────────────────────────────────
+   Canvas left, card + turn order right. The card is deliberately the same
+   box at the same size whether you are crew or the fake — see the note at
+   the top of DrawScreen.tsx. Only the label differs, and only for you. */
+.draw-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  grid-template-areas:
+    "main card"
+    "main order";
+  grid-template-rows: auto auto;
+  align-content: start;
+  gap: 16px;
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.draw-main { grid-area: main; }
+.draw-card { grid-area: card; }
+.draw-order { grid-area: order; }
+
+.draw-main {
+  min-width: 0;
+}
+
+.draw-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.draw-title {
+  font-size: 1.6rem;
+  margin: 0;
+}
+
+.draw-turn-pill {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.8rem;
+  letter-spacing: 0.5px;
+  padding: 6px 14px;
+  border: 3px solid #000;
+  border-radius: 999px;
+  background: var(--neon-magenta);
+  color: #fff;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+}
+
+.draw-canvas-wrap {
+  position: relative;
+  width: 100%;
+  border: 4px solid #000;
+  box-shadow: 0 6px 0 rgba(0, 0, 0, 0.45);
+  background: #fdfaf2;
+  line-height: 0;
+}
+
+.draw-canvas {
+  width: 100%;
+  display: block;
+  /* Not just a cursor: without this a drag on a phone scrolls the page out
+     from under the stroke instead of drawing it. */
+  touch-action: none;
+  cursor: not-allowed;
+}
+
+.draw-canvas.live {
+  cursor: crosshair;
+}
+
+.draw-canvas-lock {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 6px;
+  text-align: center;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.7rem;
+  letter-spacing: 1px;
+  color: #fff;
+  background: rgba(1, 36, 66, 0.85);
+  pointer-events: none;
+}
+
+.draw-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.draw-actions .btn-brutal {
+  flex: 1;
+  margin: 0;
+}
+
+.draw-card {
+  border: 4px solid #000;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.45);
+  background: #1b1033;
+  padding: 16px 14px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* Fixed height, so a one-word card and a two-word card are the same box.
+     A card that resizes with its content is a role tell to anyone watching
+     a stream or sitting next to you. */
+  min-height: 132px;
+  justify-content: center;
+}
+
+.draw-card.fake {
+  background: #33101f;
+}
+
+.draw-card-label {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.68rem;
+  letter-spacing: 1.5px;
+  color: var(--neon-cyan);
+}
+
+.draw-card.fake .draw-card-label {
+  color: var(--neon-magenta);
+}
+
+.draw-card-value {
+  font-family: var(--font-display, var(--font-ui));
+  font-size: 1.5rem;
+  line-height: 1.1;
+  color: #fff;
+  word-break: break-word;
+}
+
+.draw-card-note {
+  font-family: var(--font-ui);
+  font-size: 0.6rem;
+  letter-spacing: 0.8px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.draw-order {
+  border: 3px solid #000;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.4);
+  background: rgba(20, 12, 36, 0.9);
+  padding: 10px;
+}
+
+.draw-order-title {
+  display: block;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.65rem;
+  letter-spacing: 1.5px;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 8px;
+}
+
+.draw-order-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.draw-order-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.draw-order-row.active {
+  background: rgba(255, 42, 138, 0.22);
+  outline: 2px solid var(--neon-magenta);
+}
+
+.draw-order-face {
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.draw-order-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: 0.72rem;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draw-order-count {
+  font-family: var(--font-ui);
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.55);
+  flex-shrink: 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   MOBILE
+   ══════════════════════════════════════════════════════════════════════
+   The prototype was authored for a desktop browser and vhs.css carries only
+   scattered breakpoints, so this block is where the app is made to work on a
+   phone. Everything here is app-side; vhs.css stays as it is.
+
+   The one rule that matters more than any breakpoint: **a value a media query
+   must be able to override cannot be an inline style.** An inline style beats
+   every selector, so a `style={{ gridTemplateColumns }}` silently defeats the
+   collapse-to-one-column rule and the page renders two crushed columns on a
+   390px screen. That was the actual state of /dashboard. If a new screen
+   needs a responsive value, it goes in a class.
+   ------------------------------------------------------------------- */
+
+/* ── Viewport height: dvh, not vh ──────────────────────────────────────
+   Mobile browsers report 100vh as the height with the URL bar *retracted*,
+   so a fixed 100vh frame is taller than what you can actually see and its
+   bottom row — the ready button, the vote confirm — sits under the browser
+   chrome until you scroll, which a position:fixed element will not do. dvh
+   tracks the visible area as the bar shows and hides.
+
+   Kept behind @supports because dvh is the one thing here without deep
+   support, and 100vh is the right fallback rather than nothing. */
+@supports (height: 100dvh) {
+  .crt-viewport { height: 100dvh; }
+  body { min-height: 100dvh; }
+}
+
+/* ── Safe areas ────────────────────────────────────────────────────────
+   layout.tsx sets viewportFit: 'cover', so the frame reaches under the notch
+   and the home indicator and these insets become non-zero. Pad the two rows
+   that would otherwise sit beneath them; the field itself is meant to bleed. */
+/* The floors match vhs.css's own `padding: 16px 24px`, so on a device with
+   no insets (every desktop) these resolve to exactly what the header already
+   had. Only a notch moves them. */
+.crt-viewport header {
+  padding-left: max(24px, env(safe-area-inset-left));
+  padding-right: max(24px, env(safe-area-inset-right));
+  padding-top: max(16px, env(safe-area-inset-top));
+  /* Matches the top, less the border. `border-bottom` sits inside the
+     element's height under `border-box`, so it eats into the space below the
+     content and nothing above it — with a flat 16px both ends the row rendered
+     2px above the bar's centre. Two theme values (2px light, 4px dark), hence
+     the var. The MOBILE block restates this pair at 8px. */
+  padding-bottom: calc(16px - var(--border-width));
+}
+
+.home-scroll-area {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* REC is a viewfinder mark pinned inside the fixed frame, so content scrolls
+   under it at *every* scroll position, not just at the end — which rules out
+   the .view-panel trick of reserving bottom padding. On a desktop there is
+   enough margin that it rarely lands on anything; at 390px the frame is the
+   whole screen and it sits on a shop tab's label, and on the results screen
+   squarely on the win/lose line, which is the most important sentence in the
+   round.
+
+   CrtShell only passes `recording` during the word phase, so on every other
+   screen this badge is decoration with a live dot's worth of visual weight.
+   Show it on a phone only when it means something, and shrink it when it
+   does. Desktop keeps the badge everywhere — the look is unchanged there,
+   and the collision it causes is a phone-sized problem.
+
+   The :has() test degrades the right way: a browser without it fails the
+   whole selector, and REC stays visible rather than disappearing. */
+@media (max-width: 600px) {
+  .rec-indicator:not(:has(.rec-dot.active)) { display: none; }
+
+  .camcorder-hud .hud-row { margin-right: 14px; }
+
+  .rec-indicator {
+    padding: 3px 7px;
+    font-size: 0.55rem;
+    gap: 5px;
+  }
+
+  .rec-dot { width: 8px; height: 8px; }
+
+  /* The corner brackets are pinned at 16px and read as clutter on a screen
+     this size, where they frame almost nothing. */
+  .hud-bracket-tl, .hud-bracket-tr,
+  .hud-bracket-bl, .hud-bracket-br { display: none; }
+}
+
+/* ── iOS input zoom ────────────────────────────────────────────────────
+   Safari zooms the page when a focused input's text is under 16px, and it
+   does not zoom back out — you are left scrolled sideways on a fixed-frame
+   layout with no way to recover. The usual "fix" is maximum-scale=1 in the
+   viewport meta, which also takes pinch-zoom away from everyone; setting the
+   font size is the fix that costs nobody anything.
+
+   16px on the element only. .brutal-input keeps its own letter-spacing and
+   font family, so this reads as the same control, just not a tiny one. */
+@media (max-width: 900px) {
+  input,
+  select,
+  textarea,
+  .brutal-input,
+  .chat-input,
+  .word-input {
+    font-size: 16px;
+  }
+}
+
+/* ── Tap targets ───────────────────────────────────────────────────────
+   The carousel arrows are 32px, below the ~44px a fingertip reliably hits.
+   Grown on touch pointers only, so the desktop design is untouched — this is
+   a pointer-capability question, not a width one, and a touch laptop at
+   1400px has the same fingers as a phone. */
+@media (pointer: coarse) {
+  .carousel-arrow {
+    width: 44px;
+    height: 44px;
+  }
+
+  .btn-brutal,
+  .option-btn,
+  .shop-tab {
+    min-height: 44px;
+  }
+}
+
+/* ── /dashboard ──────────────────────────────────────────────────────── */
+@media (max-width: 820px) {
+  /* The cassette hanging over the top edge of the landing box goes. It is the
+     second copy of the mark on screen — the header already carries one at the
+     top left — and on a phone the two sit within about 90px of each other, one
+     under the other. It is decoration on the desktop layout, where the box is
+     wide enough that the two read as being in different places; at this width
+     it is a duplicate that costs a chunk of the fold.
+
+     `display: none`, not `visibility: hidden`: it is absolutely positioned, so
+     hiding it would leave the reserved space behind and reclaim nothing. Which
+     is the other half of this — the box's 64px of top padding exists *only* to
+     clear that logo, so with it gone the top padding matches the sides and the
+     landing box gets the same 20px the router box has always had. Between them
+     that is ~96px back on a 390px screen. */
+  .gartic-logo-top { display: none; }
+
+  .gartic-main-box { padding: 20px 16px; }
+  /* Compound for the same reason as the desktop rule. Same values as the line
+     above now — kept because the two boxes reach them for different reasons,
+     and the desktop rule they each override is different. */
+  .gartic-main-box.router-box { padding: 20px 16px; }
+  .gartic-panel { padding: 20px 16px; }
+  .gartic-hero-section { padding: 12px 0 24px 0; }
+  .gartic-container-wrapper { width: 100%; }
+}
+
+/* Three portrait cards need ~240px each to keep their titles on two lines.
+   Below ~820px that is no longer there, so they stack — still cards, just
+   one column of them, and shorter because a stack has to scroll. */
+@media (max-width: 820px) {
+  .deck-cards { grid-template-columns: 1fr; gap: 16px; }
+  .deck-card { min-height: 240px; }
+  .deck-card-art { padding-bottom: 40px; }
+  .deck-card-crowd { transform: none; }
+  .deck-card-title { font-size: 1.8rem; }
+  .gartic-main-box.router-box { padding: 22px 18px 20px 18px; }
+}
+
+@media (max-width: 560px) {
+  .deck-card { min-height: 210px; }
+  .deck-card-glyph { font-size: 2rem; top: 18px; right: 16px; }
+
+  /* Side by side, the name field is down to a couple of characters once
+     START has taken its width. Stack instead — the panel has the room. */
+  .access-name-row { flex-direction: column; }
+  .access-start-btn { width: 100%; }
+}
+
+/* ── Header ────────────────────────────────────────────────────────────
+   vhs.css stacks the header into a centred column under 768px. In-game that
+   costs a row of vertical space on the screen that has least to spare, so the
+   logo block shrinks instead — and on a phone it drops to the mark alone. */
+@media (max-width: 768px) {
+  .logo-container { gap: 8px; }
+
+  .site-logo { width: 44px; }
+
+  /* The wordmark goes. It was set at an inline 2.2rem — shrunk here to 1.4rem
+     with an !important, since an inline style is unreachable any other way —
+     and even then "TAPE SUSPECT" plus a badge plus the controls is more than a
+     390px bar holds; the row wrapped and took a second line off the screen
+     that needs it most. The mark alone still says which app this is, and it
+     keeps the whole affordance: it is inside `.logo-home-link`, so the link
+     and its aria-label survive with it and the image is still what you press
+     to go home. `display: none` rather than clipping the text, because a
+     hidden-but-present <h1> would keep its width in the flex row. */
+  .logo-container .brutal-title,
+  .logo-home-link .brutal-title {
+    display: none;
+  }
+
+  /* The page label goes with it — "LOBBY ROUTER", "SHOP", "SIGN IN". It names
+     the screen you are already looking at, which is the first thing to cut on
+     a bar this narrow. Only the label: a room code is the one badge that is
+     data rather than a caption, and on the in-game screens the header is the
+     only place it appears. That is what `.header-badge-label` marks — CrtShell
+     sets it on the `home` routes, which are exactly the ones whose badge is a
+     caption. */
+  .header-badge-label { display: none; }
+
+  /* One row, not two. vhs.css turns the header into a centred column under
+     768px, which is why a phone got a stacked bar: the mark on its own line,
+     SIGN IN and the theme toggle centred on a second, and the whole thing
+     eating ~120px off the shortest screen in the app. Undo the column and put
+     it back to the desktop arrangement — mark hard left, controls hard right —
+     which now fits because the wordmark and the page label are gone above.
+     `space-between` comes from vhs.css's base rule; only the direction and the
+     `text-align: center` it added need reversing. */
+  .crt-viewport header {
+    flex-direction: row;
+    text-align: left;
+    gap: 8px;
+    /* Centred in the bar, which it was not: the safe-area rule sets a 16px top
+       floor and this block set 8px at the bottom, so the row sat 3px low —
+       `align-items: center` centres within the *content* box, and an
+       asymmetric padding moves that box. 8px both ends now; the notch case
+       still wins through `max()`, and on a device that has one the inset is
+       unusable space rather than padding, so the asymmetry there is correct.
+
+       The bottom subtracts the border because `border-bottom` is inside the
+       element's height under `border-box`, so it counts against the space
+       below the content and nothing above it. Two theme values (2px light,
+       4px dark) — hence the var rather than a number. */
+    padding-top: max(8px, env(safe-area-inset-top));
+    padding-bottom: calc(8px - var(--border-width));
+  }
+
+  /* `flex-end` rather than `center`: with one row the controls own the right
+     end of the bar, and `.header-controls` still wraps internally if a route
+     hangs three things off it. `flex-shrink: 0` on the logo keeps the mark
+     from being squeezed when it does. */
+  .header-controls { gap: 8px; justify-content: flex-end; }
+
+  .logo-container { flex-shrink: 0; }
+}
+
+/* ── Landing ───────────────────────────────────────────────────────────
+   The floating tape is already hidden under 768px by vhs.css. What is left
+   is the hero eating the whole first screen before the play button. */
+@media (max-width: 480px) {
+  .hero-section { padding: 24px 12px; }
+  .hero-logo { width: 130px; }
+}
+
+/* ── In-game panels ────────────────────────────────────────────────────
+   .view-panel is the scroll container for every room phase, so the phone
+   gutter belongs on it rather than on each screen. The bottom padding is
+   the REC strip (see the note further up) plus the home indicator. */
+@media (max-width: 768px) {
+  .view-panel.active-view {
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-bottom: calc(56px + env(safe-area-inset-bottom));
+  }
+
+  /* Lobby and voting both run a 2-up grid of player consoles that gets to
+     ~150px a cell on a phone — enough for the name, not for the avatar
+     that overhangs the top edge. One column reads properly. */
+  .lobby-layout,
+  .voting-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .brutal-card { padding: 16px; }
+
+  /* A player console is a fixed 220x125 in vhs.css, which is a hard floor:
+     put it in a narrower grid cell and it does not shrink, it hangs out of
+     the frame. The lobby roster and the voting grid are both built from it,
+     so both spilled at 390px. Let it fill whatever cell it is given, and
+     keep 220px as the ceiling so nothing stretches on a tablet.
+
+     Height goes auto for the same reason — 125px was sized around the
+     desktop type scale, and a long name wrapping to two lines pushes the
+     status row out of a fixed box. */
+  .vhs-player {
+    width: 100%;
+    max-width: 220px;
+    height: auto;
+    min-height: 125px;
+  }
+
+  .tapes-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+    justify-items: center;
+    gap: 14px;
+  }
+
+  /* The deliberation chat is a fixed 380px against a 900px breakpoint,
+     which on a phone leaves the vote grid off the bottom of the page. */
+  .voting-chat-box { height: 260px; }
+
+  /* Stacked, the roster and the options panel each keep their own scroller
+     against a page that also scrolls — a scroller inside a scroller, where
+     neither reliably gets the gesture. Let both size to content and give the
+     view panel the single scroll.
+
+     That means undoing the whole desktop height chain, not just the two
+     scrollers: leave `flex: 1` on the grid and it still pins itself to the
+     viewport, so the panels get squeezed to nothing instead of growing. */
+  .lobby-layout {
+    flex: none;
+    min-height: 0;
+    grid-template-rows: none;
+  }
+
+  .lobby-roster-list,
+  .lobby-tab-body {
+    flex: none;
+    overflow-y: visible;
+  }
+
+  /* No scroller here means no scrollbar to make room for, and the negative
+     margins that pulled it out to the panel edge would now just hang the
+     consoles 18px outside the panel on both sides. */
+  .lobby-roster-list {
+    margin-left: 0;
+    margin-right: 0;
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  .lobby-panel { padding: 14px 12px; }
+
+  /* Two across still holds the icon and one word; Custom URL and Video Games
+     wrap to two lines, which is fine at this size. */
+  .mode-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* No min-height: it would beat the 1.8:1 ratio at this width (~165px wide
+     wants ~92px tall) and stretch the phone cards taller than the desktop
+     ones. The icon comes down instead, since a two-line name plus the glyph is
+     what has to fit in the shorter box. */
+  .mode-card-icon { font-size: 1.9rem; }
+
+  /* Both labels are two words and the strip is half a phone wide each, so
+     they wrap to two lines and the tabs stop lining up. */
+  .lobby-tab { font-size: 0.8rem; padding: 10px 6px; }
+
+  /* A label plus a two-option control is ~325px of content in a 270px row at
+     390px wide, and `flex-shrink: 0` on the control means the overflow goes
+     straight out through the panel's right border rather than squashing.
+     Let the row wrap and the control keeps its size on a line of its own,
+     still right-aligned because the auto margin outlives the wrap. */
+  .setting-row { flex-wrap: wrap; row-gap: 8px; }
+  .setting-stepper,
+  .setting-choice { margin-left: auto; }
+
+  /* ROLL TAPE has to be the obvious thing on the screen, and on one column
+     that means full width rather than third-of-a-row. */
+  .lobby-actions { flex-direction: column; align-items: stretch; }
+  .lobby-action-btn { justify-content: center; }
+  .lobby-actions-note { text-align: center; }
+}
+
+/* ── Watch phase ───────────────────────────────────────────────────────
+   Reactions bottom-right and the ready bar bottom-centre are comfortably
+   apart on a desktop and overlap on a phone, where the emoji row is nearly
+   the full width. Lift the ready bar above it and clear the home indicator.
+
+   Reactions are the thing that most wants the corner here — the button has
+   to stay under a thumb — so it keeps the corner and the ready bar moves. */
+@media (max-width: 560px) {
+  .watch-ready-bar {
+    bottom: calc(88px + env(safe-area-inset-bottom));
+  }
+
+  .reaction-bar {
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    gap: 8px;
+  }
+
+  .reaction-emoji-btn { width: 40px; height: 40px; font-size: 1.15rem; }
+  .reaction-toggle { width: 46px; height: 46px; font-size: 1.3rem; }
+
+  /* Above the relocated ready bar, not beside it. The bar is centred and the
+     float column is right-aligned, and at 390px those two ranges cross —
+     a reaction drifting left lands on the button. */
+  .reaction-float-layer {
+    right: max(14px, env(safe-area-inset-right));
+    bottom: calc(150px + env(safe-area-inset-bottom));
+    height: 220px;
+    width: 84px;
+  }
+}
+
+/* The insertion overlay's container is a fixed 400px, so it hangs 5px off
+   each side of a 390px screen — and .insertion-status is white-space: nowrap
+   inside it (see the note above), so the longer "TAPE LOADED… READING… 4/5
+   PLAYERS" line runs well past that. Give the container the screen and let
+   the caption shrink instead of overrunning. */
+@media (max-width: 430px) {
+  .insertion-container {
+    width: 100%;
+    max-width: 100vw;
+  }
+
+  .insertion-status {
+    font-size: 0.6rem;
+    letter-spacing: 0;
+    padding: 0 8px;
+  }
+}
+
+/* The emoji row plus the toggle is ~290px, which fits 390px but not a 320px
+   iPhone SE alongside its margins. Wrap the row above the toggle rather than
+   shrinking the buttons past the point of being hittable. */
+@media (max-width: 380px) {
+  .reaction-bar {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+
+  .reaction-row { transform-origin: bottom right; }
+
+  .reaction-float-layer { bottom: calc(140px + env(safe-area-inset-bottom)); }
+}
+
+/* ── Modals ────────────────────────────────────────────────────────────
+   Every modal in the app is a fixed max-width card centred in the viewport.
+   On a phone they need the gutter, and the tall ones (the shop, the guest
+   identity card) need to scroll rather than run off the screen. */
+@media (max-width: 600px) {
+  .modal-card {
+    width: calc(100% - 24px) !important;
+    max-width: none !important;
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+    padding: 20px 16px;
+  }
+
+  .shop-modal-card {
+    width: calc(100% - 20px) !important;
+    height: calc(100dvh - 32px) !important;
+    padding: 18px 14px !important;
+  }
+
+  .shop-modal-card .shop-grid { max-height: none !important; padding-right: 4px !important; }
+
+  .modal-actions { flex-direction: column; }
+  .modal-actions .btn-brutal { width: 100%; }
+}
+
+/* ── Shop ──────────────────────────────────────────────────────────────
+   auto-fill at the prototype's 220px minimum leaves a single column with
+   ~40px of dead gutter on a 390px screen. Drop the minimum so two cards fit,
+   which is what makes the grid worth scrolling. */
+@media (max-width: 560px) {
+  /* .shop-grid only. NOT .tapes-grid, which despite the name is the lobby's
+     player-console grid — narrowing that one puts two 220px consoles in a
+     170px cell each and both spill off the screen. */
+  .shop-grid.active-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+  }
+
+  .shop-section { padding: 20px 12px 40px 12px; }
+}
+
+/* ── Results ───────────────────────────────────────────────────────────
+   The VCR deck is a fixed 300px wide under 600px (vhs.css), which overflows
+   once the .view-panel gutter is added. Scale it rather than re-laying it
+   out — the eject animation is authored against these dimensions and
+   changing them desynchronises the cassette from the slot. */
+@media (max-width: 400px) {
+  .results-container .vcr-deck {
+    transform: scale(0.85);
+    transform-origin: top center;
+  }
+}
+
+/* ── Horizontal overflow backstop ──────────────────────────────────────
+   A fixed full-bleed frame cannot scroll sideways to reveal what spills out
+   of it, so anything that overflows is simply lost rather than reachable.
+   Clip at the frame and treat a sideways scrollbar as the bug it is. */
+@media (max-width: 900px) {
+  html, body { overflow-x: hidden; max-width: 100%; }
+}
+
+/* ── Voting console: the channel label lands on the player's name ─────
+   `.monitor-osd` ("CH. 1 — REC") is absolute at top: 8px inside a console
+   whose flow content starts at its 10px padding, so the label and the first
+   line of `.player-display` occupy the same 10px band and the two strings
+   render on top of each other. Same shape of problem as the two cassette
+   collisions noted above: an absolutely-positioned element dropped onto a
+   layout that was measured without it.
+
+   NOT a mobile bug — measured at 1440px and the boxes overlap identically,
+   because the console is pinned to 220x125 with !important and so lays out
+   the same at every width. It was just easier to see on a phone.
+
+   Reserve the strip rather than moving the label: the OSD reading top-left
+   like a camcorder overlay is the look, and .player-display is the only
+   thing that needs to get out of its way. */
+.vhs-player.monitor-screen .player-display {
+  margin-top: 20px;
+  /* With the name row no longer shrinking (see below), the two rows need
+     30px against the 26px this 6px-padded box left them, and the status row
+     ran out through the bottom border. Buy the 4px back from the padding
+     rather than from either row — the box is already sized to the console. */
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+/* Same console, second collision: the player's name is a flex child of a
+   fixed-height .player-display, so when the status row underneath grows —
+   which it does the moment someone votes and it becomes "▶ NAME" — the
+   name row is what flex shrinks. It ends up 12px tall holding 16px of text,
+   and `overflow: hidden` crops the glyphs through the middle, which reads
+   as a strikethrough rather than as clipping.
+
+   Also not a mobile bug: measured at 1440px, scrollHeight 16 against
+   clientHeight 12. The name is the identifying thing on a voting console,
+   so it is the row that must not give — let the status row absorb it.
+
+   .tape-title is the identical bug on the results cassette: the accused's
+   name in Permanent Marker inside a 42px `overflow: hidden` label, shrunk by
+   the sublabel below it and cropped through the middle of the glyphs. Same
+   fix, same reason — the name is the payload of that whole animation. */
+.player-display-text,
+.tape-title { flex-shrink: 0; }
+
+/* ── Roster characters ───────────────────────────────────────────────
+   The illustrated characters in public/avatars are self-contained badges:
+   each one draws its own coloured circle, and hats, ears and antennae
+   deliberately break out above it. vhs.css's avatar slots were built to
+   frame a bare emoji, so they supply a white disc, a black ring and a
+   circular mask — all three now fight the art, cropping exactly the
+   silhouette that gives each character its identity.
+
+   `.character-slot` keeps the slot's position and size and drops the
+   framing. It is a modifier rather than an override of the base classes
+   because .player-avatar-circle is still the thing that pins the avatar to
+   a .vhs-player console's top edge. */
+.player-avatar-circle.character-slot,
+.avatar-preview-container.character-slot {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+/* Size is set by <Avatar size>, as an inline height. Do NOT try to size the
+   image from here: an inline style outranks any selector, so a rule like
+   ".character-slot img { height: 100% }" looks right and silently does
+   nothing. Width is left auto so the 262×299 art is never stretched square. */
+
+/* The signup / guest-gate preview is a plain stage for the artwork now, so it
+   no longer needs the disc's fixed square. Width tracks the art. */
+.avatar-preview-container.character-slot {
+  width: auto;
+  height: auto;
+}
+.avatar-preview-container.character-slot #avatar-svg-wrapper {
+  border-radius: 0;
+  overflow: visible;
+  width: auto;
+  height: auto;
+}
+
+/* .btn-circular is pinned to the bottom-right of the preview container. With
+   the disc gone that box is only as wide as the character, so the default
+   -4px inset drops the button squarely on their face. Sit it outside the
+   artwork instead, clear of the silhouette. */
+.avatar-preview-container.character-slot .btn-circular {
+  right: -26px;
+  bottom: -6px;
+}
+
+/* Fake Artist stacks: the canvas is the point, so it gets the full width and
+   the card drops beneath it. The card stays above the turn order — you need to
+   re-read your word far more often than you need the running stroke counts. */
+@media (max-width: 820px) {
+  .draw-layout {
+    grid-template-columns: minmax(0, 1fr);
+    /* Card first: on a phone the canvas fills the screen, and having to
+       scroll past it to re-read your own word is most of the round. */
+    grid-template-areas:
+      "card"
+      "main"
+      "order";
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .draw-title {
+    font-size: 1.3rem;
+  }
+
+  .draw-turn-pill {
+    font-size: 0.7rem;
+    padding: 5px 11px;
+  }
+
+  .draw-card {
+    min-height: 0;
+    padding: 12px;
+  }
+
+  .draw-card-value {
+    font-size: 1.3rem;
+  }
+}
+
+/* ── Wavelength ───────────────────────────────────────────────────────
+   The scale is public and the target marker is rendered only when the server
+   dealt one — which it does for the psychic alone. There is deliberately no
+   "hidden marker" placeholder: an element whose position exists in the DOM
+   for everyone is a target anyone can read out of devtools. */
+.wl-layout {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.wl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wl-title { font-size: 1.6rem; margin: 0; }
+
+.wl-timer {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 6px 16px;
+  border: 3px solid #000;
+  border-radius: 999px;
+  background: var(--neon-magenta);
+  color: #fff;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4);
+}
+
+.wl-scale {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.wl-end {
+  font-family: var(--font-brutal);
+  font-size: 0.9rem;
+  letter-spacing: 1px;
+  max-width: 120px;
+  text-align: center;
+  color: var(--neon-cyan);
+}
+
+.wl-end.right { color: var(--neon-magenta); }
+
+.wl-track {
+  position: relative;
+  height: 46px;
+  border: 4px solid #000;
+  border-radius: 999px;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.45);
+  background: linear-gradient(90deg, #00c9ff 0%, #1b1033 50%, #ff2a8a 100%);
+}
+
+.wl-target {
+  position: absolute;
+  top: -6px;
+  bottom: -6px;
+  width: 5px;
+  margin-left: -2.5px;
+  background: var(--neon-green);
+  border: 2px solid #000;
+  border-radius: 3px;
+}
+
+.wl-target-flag {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.7rem;
+  padding: 2px 7px;
+  border: 2px solid #000;
+  border-radius: 5px;
+  background: var(--neon-green);
+  color: #012442;
+}
+
+.wl-dial-marker {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 5px;
+  margin-left: -2.5px;
+  background: #fff;
+  border: 2px solid #000;
+  border-radius: 3px;
+}
+
+.wl-panel {
+  border: 4px solid #000;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.45);
+  background: rgba(20, 12, 36, 0.92);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.wl-role-label {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.7rem;
+  letter-spacing: 2px;
+  color: var(--neon-cyan);
+}
+
+.wl-role-label.psychic { color: var(--neon-green); }
+
+.wl-instruction {
+  margin: 0;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+  max-width: 460px;
+}
+
+.wl-clue-text {
+  margin: 0;
+  font-family: var(--font-display, var(--font-ui));
+  font-size: 1.6rem;
+  color: #fff;
+  word-break: break-word;
+}
+
+.wl-clue-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  max-width: 520px;
+}
+
+.wl-clue-input { flex: 1; margin: 0; }
+.wl-clue-row .btn-brutal { margin: 0; flex-shrink: 0; }
+
+.wl-dial {
+  width: 100%;
+  max-width: 520px;
+  /* 16px minimum, or iOS zooms the page when the control takes focus. */
+  height: 32px;
+  accent-color: var(--neon-magenta);
+  cursor: pointer;
+}
+
+.wl-progress {
+  font-family: var(--font-ui);
+  font-size: 0.68rem;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+@media (max-width: 820px) {
+  .wl-scale {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .wl-end { max-width: none; }
+  .wl-end.left { order: 1; }
+  .wl-track { order: 2; }
+  .wl-end.right { order: 3; }
+  .wl-title { font-size: 1.3rem; }
+  .wl-clue-row { flex-direction: column; }
+  .wl-clue-text { font-size: 1.25rem; }
+}
+
+/* Wavelength's results table — the scored round's answer to the suspect reveal. */
+.wl-results {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wl-results-scale {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.wl-results-clue {
+  text-align: center;
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.wl-score-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wl-score-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border: 3px solid #000;
+  border-radius: 10px;
+  background: rgba(20, 12, 36, 0.9);
+}
+
+.wl-score-rank {
+  font-family: var(--font-brutal);
+  font-size: 0.9rem;
+  color: var(--neon-green);
+  width: 20px;
+  flex-shrink: 0;
+}
+
+.wl-score-face { flex-shrink: 0; line-height: 0; }
+
+.wl-score-name {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wl-score-detail {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.5);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wl-score-points {
+  font-family: var(--font-brutal);
+  font-size: 1.1rem;
+  color: var(--neon-magenta);
+  flex-shrink: 0;
+  min-width: 24px;
+  text-align: right;
+}
+
+@media (max-width: 820px) {
+  .wl-results-scale { grid-template-columns: minmax(0, 1fr); }
+  .wl-score-detail { display: none; }
+}
+
+/* ── Bluff Definitions ────────────────────────────────────────────────
+   The ballot deliberately carries no author styling. Every option renders
+   identically except your own, which is greyed out because you cannot vote
+   for it — any other per-option difference would leak the mapping the round
+   is built on hiding. */
+.bluff-layout {
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.bluff-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bluff-title { font-size: 1.6rem; margin: 0; }
+
+.bluff-timer {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 6px 16px;
+  border: 3px solid #000;
+  border-radius: 999px;
+  background: var(--neon-magenta);
+  color: #fff;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4);
+}
+
+.bluff-word-card {
+  border: 4px solid #000;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.45);
+  background: #1b1033;
+  padding: 16px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bluff-word-label {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.66rem;
+  letter-spacing: 2px;
+  color: var(--neon-cyan);
+}
+
+.bluff-word {
+  font-family: var(--font-display, var(--font-ui));
+  font-size: 2rem;
+  line-height: 1.1;
+  color: #fff;
+  word-break: break-word;
+}
+
+.bluff-panel {
+  border: 4px solid #000;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.45);
+  background: rgba(20, 12, 36, 0.92);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.bluff-instruction {
+  margin: 0;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+  text-align: center;
+}
+
+.bluff-input {
+  width: 100%;
+  margin: 0;
+  resize: none;
+  /* 16px, or iOS zooms the viewport when the field takes focus. */
+  font-size: 16px;
+  font-family: var(--font-ui);
+}
+
+.bluff-panel .btn-brutal { margin: 0; }
+
+.bluff-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bluff-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 3px solid #000;
+  border-radius: 10px;
+  background: rgba(35, 22, 58, 0.95);
+  color: #fff;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  cursor: pointer;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4);
+}
+
+.bluff-option:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.4);
+}
+
+.bluff-option.picked {
+  background: var(--neon-magenta);
+  box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.4);
+}
+
+.bluff-option.mine {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bluff-option:disabled { cursor: not-allowed; }
+
+.bluff-option-index {
+  font-family: var(--font-brutal);
+  color: var(--neon-green);
+  flex-shrink: 0;
+  width: 18px;
+}
+
+.bluff-option-text { flex: 1; min-width: 0; }
+
+.bluff-option-tag {
+  font-size: 0.6rem;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.6);
+  flex-shrink: 0;
+}
+
+.bluff-progress {
+  font-family: var(--font-ui);
+  font-size: 0.68rem;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* The reveal: authors attached at last. */
+.bluff-reveal { width: 100%; display: flex; flex-direction: column; gap: 10px; }
+
+.bluff-reveal-word {
+  font-family: var(--font-display, var(--font-ui));
+  font-size: 1.3rem;
+  color: #fff;
+  text-align: center;
+}
+
+.bluff-reveal-word span {
+  font-family: var(--font-ui);
+  font-size: 0.7rem;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.bluff-reveal-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.bluff-reveal-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 3px solid #000;
+  border-radius: 10px;
+  background: rgba(20, 12, 36, 0.9);
+  text-align: left;
+}
+
+.bluff-reveal-row.real {
+  background: rgba(0, 255, 102, 0.16);
+  outline: 2px solid var(--neon-green);
+}
+
+.bluff-reveal-author {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.72rem;
+  color: var(--neon-cyan);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bluff-reveal-row.real .bluff-reveal-author { color: var(--neon-green); }
+
+.bluff-reveal-text { font-size: 0.78rem; color: #fff; }
+
+.bluff-reveal-votes {
+  font-family: var(--font-ui);
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.55);
+  flex-shrink: 0;
+}
+
+@media (max-width: 820px) {
+  .bluff-title { font-size: 1.3rem; }
+  .bluff-word { font-size: 1.6rem; }
+  .bluff-reveal-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .bluff-reveal-author { grid-column: 1 / -1; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   LIGHT MODE
+   ══════════════════════════════════════════════════════════════════════
+   Toggled by `data-theme="light"` on <html> (ThemeToggle.tsx), set before
+   first paint by the inline script in layout.tsx.
+
+   This is dark mode's *structure* with a different palette — same layout, same
+   borders, same offset shadows, same everything except colour. Two earlier
+   attempts restyled the shapes as well and both read as a different app.
+
+   Every value below was sampled from lightmode.png (the Gartic Phone lobby) by
+   scanning regions for their darkest and lightest pixels rather than eyeing
+   single points, which land on anti-aliased edges and lie:
+
+     page gradient   #722de9 -> #6a00be
+     panel fill      #4f079b
+     panel edge      #8140d7      <- --border-color
+     card fill       #ffffff -> #d4c4fc
+     card edge       #f0e8fe
+     card ink        #2f0968
+     heading green   #a3ffb9   <- sampled, but not used: see --neon-green below
+     button fill     #2f0968
+     empty slot      #4c0ea3, text #7956d5
+
+   The structural rule that falls out of the reference: **panels are purple and
+   cards are white.** A panel is furniture you read past; a card is a thing you
+   press. Keeping that split is what stops the screen becoming either a wall of
+   white boxes or an undifferentiated purple field.
+   ------------------------------------------------------------------- */
+:root[data-theme='light'] {
+  --bg-dark: #6a00be;
+  --bg-darker: #4f079b;
+  /* The edges. vhs.css draws every border AND every offset shadow from these
+     two, so they are the highest-leverage values here.
+
+     The colour is translucent rather than solid: a glass edge is a thin bright
+     line you can see through, and a solid stroke — however light — reads as a
+     drawn outline instead. It also softens every offset shadow in the app to a
+     faint lilac glow, which suits the material. */
+  --border-color: rgba(228, 212, 255, 0.44);
+  --border-width: 2px;
+  /* The reference's mint (#a3ffb9) is deliberately not used: light mode takes
+     the theme's pink for everything the dark theme paints green, so the whole
+     screen answers to one accent instead of two. Named `--neon-green` still,
+     because vhs.css and a dozen components read it by that name — it is the
+     accent slot, not a colour. Anything green in light mode comes from here. */
+  --neon-green: #ff5fa2;
+  --neon-cyan: #d4c4fc;
+  --neon-magenta: #ff5fa2;
+  --neon-yellow: #ffc93c;
+  --neon-yellow-active: #e0ad20;
+  --ink-mute: #b9a3e8;
+}
+
+/* The page. Fixed attachment so it does not slide under a scrolling panel and
+   break the illusion of one continuous ground. `#crt-viewport` is an ID
+   selector in vhs.css, so the class alone loses to it — match both.
+
+   This is the landing page's gradient, now the ground on every route. It used
+   to be landing-only — keyed on `:has(#hero-section)` at the foot of the file
+   — with everything else on a darker `165deg #4a1490 → #2d0a63 → #180334`, on
+   the argument that the other screens wanted a darker ground for their panels
+   to read against. The cost was that / was visibly a lighter app than
+   /dashboard, and walking between them looked like a bug. The panels read fine
+   on this: they are darker than it, which is the direction the reference
+   works in anyway. */
+:root[data-theme='light'] body,
+:root[data-theme='light'] #crt-viewport.crt-viewport {
+  background: linear-gradient(160deg, #6d1fd3 0%, #2f0862 100%);
+  background-attachment: fixed;
+  color: #ffffff;
+}
+
+:root[data-theme='light'] .crt-viewport::before,
+:root[data-theme='light'] .crt-viewport::after {
+  /* Scanlines belong to the CRT conceit but read as grime over flat purple. */
+  opacity: 0.08;
+}
+
+/* Containers, not cards — these must stay transparent or they paint over the
+   page. Giving `.view-panel` a fill once covered the entire viewport. */
+:root[data-theme='light'] .view-panel,
+:root[data-theme='light'] .home-viewport,
+:root[data-theme='light'] .home-scroll-area {
+  background: transparent;
+}
+
+/* ── Panels: purple furniture ── */
+:root[data-theme='light'] .brutal-card,
+:root[data-theme='light'] .modal-card,
+:root[data-theme='light'] .lobby-panel,
+:root[data-theme='light'] .gartic-hero-section,
+:root[data-theme='light'] .draw-order,
+:root[data-theme='light'] .wl-panel,
+:root[data-theme='light'] .bluff-panel,
+:root[data-theme='light'] .lobby-layout {
+  background: #4f079b;
+  color: #ffffff;
+}
+
+/* The bar's one shade, and the only background it gets — the glass block
+   further down deliberately does not list the header, so nothing overrides
+   this with a gradient. See the note there. */
+:root[data-theme='light'] .crt-viewport > header {
+  background: #4f079b;
+}
+
+/* ── Cards: white things you press ──
+   A gradient rather than flat white, matching the reference: the top of each
+   card is #ffffff and the bottom settles into #d4c4fc, which is what stops a
+   grid of them reading as one large white slab. */
+:root[data-theme='light'] .lobby-item-card,
+:root[data-theme='light'] .setting-row,
+:root[data-theme='light'] .bluff-option,
+:root[data-theme='light'] .bluff-reveal-row,
+:root[data-theme='light'] .wl-score-row,
+:root[data-theme='light'] .draw-order-row,
+:root[data-theme='light'] .prompt-card {
+  background: linear-gradient(180deg, #ffffff 0%, #d4c4fc 100%);
+  /* Thin and translucent, so the card's rim catches the page rather than
+     stamping a hard outline on it. */
+  border-width: 2px;
+  border-color: rgba(255, 255, 255, 0.72);
+  color: #2f0968;
+}
+
+/* The two illustrated card types — .mode-card and .deck-card — take no
+   light-mode colour at all. They are the same call twice: a card whose whole
+   face is artwork keeps its dark theme colours, because the fill is what the
+   art reads against. Turning .deck-card white replaced three full-bleed
+   gradients (magenta / cyan / yellow) with three white rectangles and the
+   character illustrations lost their ground. Their titles and notes stay off
+   the card-ink list for the same reason — white text on the saturated fill.
+
+   .mode-card takes no light-mode colour at all — it is the one card that looks
+   the same in both themes, and that is deliberate rather than an omission. The
+   mode grid is a wall of illustrated tiles, and turning them white made ten
+   bright icons float on ten white rectangles with nothing holding them; the
+   dark fill is what the icons read against. It keeps its black border, its
+   black offset shadow and its green selection ring from the base rule, so the
+   only thing that changes around it in light mode is the panel behind it.
+
+   The consequence for the panel/card split: this is a card that stays dark on
+   a purple panel, so it separates by *value* rather than by fill. Don't add it
+   back to the white-card list to make the rule tidy. */
+
+/* Everything inside a white card takes the card's ink. Listed explicitly
+   because most of these set their own colour for the dark theme. .mode-card-name
+   is not here: its card is not white, and it carries its own dark-ink-plus-white
+   halo in both themes. */
+:root[data-theme='light'] .setting-label,
+:root[data-theme='light'] .setting-value,
+:root[data-theme='light'] .lobby-item-host,
+:root[data-theme='light'] .lobby-item-code,
+:root[data-theme='light'] .lobby-item-players,
+:root[data-theme='light'] .bluff-option-text,
+:root[data-theme='light'] .bluff-reveal-text,
+:root[data-theme='light'] .wl-score-name,
+:root[data-theme='light'] .draw-order-name,
+:root[data-theme='light'] .prompt-card-text {
+  color: #2f0968;
+}
+
+:root[data-theme='light'] .wl-score-detail,
+:root[data-theme='light'] .draw-order-count,
+:root[data-theme='light'] .bluff-reveal-votes {
+  color: #6b4aa8;
+}
+
+/* The selected card keeps the theme's magenta fill and needs light ink back.
+   .mode-card is deliberately not in this list any more: it marks selection
+   with a green border rather than a fill, so it stays a white card and its ink
+   is already the card ink from the rule above. */
+:root[data-theme='light'] .bluff-option.picked {
+  background: var(--neon-magenta);
+  color: #2f0968;
+}
+
+/* Empty roster slots are purple, not white — they are absence, not a card. */
+:root[data-theme='light'] .vhs-player {
+  background: #4c0ea3;
+  color: #ffffff;
+}
+
+:root[data-theme='light'] .vhs-player.empty,
+:root[data-theme='light'] .player-display-text {
+  color: #7956d5;
+}
+
+/* ── Type on purple ── */
+:root[data-theme='light'] .brutal-title {
+  color: #ffffff;
+}
+
+/* The wordmark is the one piece of type that does not change between themes:
+   yellow, black stroke, black drop shadow, exactly as vhs.css draws it. It is
+   the brand rather than a heading on the page, so it keeps its own colours the
+   way `.mode-card` and `.deck-card` keep theirs. All three values have to be
+   restated here: the fill because `:root[data-theme='light'] .brutal-title`
+   above turns it white, and the stroke and shadow because both read
+   `--border-color`, which is the faint lilac in light mode. Both selectors are
+   needed for the same reason the MOBILE block lists both: the header renders
+   the <h1> inside `.logo-home-link` when the logo is a link home and inside
+   `.logo-container` when it is not. */
+:root[data-theme='light'] .logo-container .brutal-title,
+:root[data-theme='light'] .logo-home-link .brutal-title {
+  color: var(--neon-yellow);
+  -webkit-text-stroke: 2px #000000;
+  text-shadow: 4px 4px 0px #000000;
+}
+
+/* Section headings take the accent — the reference sets these in its mint, but
+   light mode runs one accent and it is the pink. */
+:root[data-theme='light'] .mode-group-title,
+:root[data-theme='light'] .lobby-panel-title {
+  color: var(--neon-magenta);
+}
+
+/* `.osd-text` is white with a 2px black shadow. The white is right on purple;
+   only the shadow goes, and it is the most-used text class in the app. */
+:root[data-theme='light'] .osd-text {
+  color: #ffffff;
+  text-shadow: none;
+}
+
+:root[data-theme='light'] .wl-instruction,
+:root[data-theme='light'] .bluff-instruction,
+:root[data-theme='light'] .wl-progress,
+:root[data-theme='light'] .bluff-progress,
+:root[data-theme='light'] .draw-order-title {
+  color: #c9b5f0;
+}
+
+/* ── Controls ── */
+:root[data-theme='light'] .lobby-tab {
+  background: #3e057f;
+  color: #b9a3e8;
+}
+
+:root[data-theme='light'] .lobby-tab:hover { color: #ffffff; }
+
+:root[data-theme='light'] .lobby-tab.active {
+  background: #4f079b;
+  color: var(--neon-magenta);
+}
+
+/* The mode grid's selection ring. `.mode-card.active` is a base rule (it marks
+   the chosen mode in both themes), so the green is hard-coded there and this is
+   what repaints it for light mode. The hover variant has to be restated at
+   matching specificity — `.mode-card.active:hover:not(:disabled)` outranks a
+   theme-prefixed `.mode-card.active`, so without the second selector the ring
+   would flick back to green under the pointer. */
+:root[data-theme='light'] .mode-card.active,
+:root[data-theme='light'] .mode-card.active:hover:not(:disabled) {
+  box-shadow: 0 0 0 3px var(--neon-magenta);
+}
+
+/* The equipped item's ring follows --neon-green, but its aura is a literal
+   green rgba in the edge-language block, so it would sit a faint green haze
+   around a pink ring. Higher specificity, so it lands wherever that block
+   sits in the file. */
+:root[data-theme='light'] .shop-item-card.equipped {
+  box-shadow: 0 var(--shadow-offset) 0px var(--neon-magenta), 0 0 20px rgba(255, 95, 162, 0.18);
+}
+
+/* Buttons take the reference's deep purple with white text. */
+:root[data-theme='light'] .btn-brutal.dark {
+  background-color: #2f0968;
+  color: #ffffff;
+}
+
+/* The bright fills stay bright and take the card ink, which holds contrast on
+   all of them where white would not. */
+:root[data-theme='light'] .btn-brutal.green,
+:root[data-theme='light'] .btn-brutal.yellow,
+:root[data-theme='light'] .btn-brutal.cyan,
+:root[data-theme='light'] .btn-brutal.magenta {
+  color: #2f0968;
+}
+
+:root[data-theme='light'] .brutal-input,
+:root[data-theme='light'] .access-name-input {
+  background: #ffffff;
+  color: #2f0968;
+}
+
+:root[data-theme='light'] .brutal-input::placeholder {
+  color: #8b7fb8;
+}
+
+/* ── Kept as they are in both themes ── */
+/* The two cards holding a secret stay solid and dark: a white card with your
+   word on it is markedly easier to read over somebody else's shoulder, which
+   is the one thing these screens cannot afford. */
+:root[data-theme='light'] .draw-card { background: #2e1065; }
+:root[data-theme='light'] .draw-card.fake { background: #4a1035; }
+:root[data-theme='light'] .draw-card-value,
+:root[data-theme='light'] .bluff-word { color: #ffffff; }
+:root[data-theme='light'] .bluff-word-card { background: #2e1065; }
+
+/* The drawing surface stays paper — it is a canvas, not a panel. */
+:root[data-theme='light'] .draw-canvas-wrap { background: #fdfaf2; }
+
+/* A literal VCR on-screen display: a screen *within* the page, so it keeps its
+   own colours or it stops reading as one. */
+:root[data-theme='light'] .osd-menu {
+  background: #0000aa;
+  color: #ffffff;
+}
+
+/* ── Liquid glass ─────────────────────────────────────────────────────
+   Light mode only, and that is a technical constraint rather than a
+   preference: `backdrop-filter` blurs whatever is behind the element, so glass
+   needs a background with variation in it to read as glass. Light mode has the
+   #722de9 -> #6a00be gradient; dark mode is near-flat, where a frosted panel
+   is indistinguishable from a solid one and costs a compositing layer for
+   nothing.
+
+   Three parts make it look like glass rather than like opacity:
+
+     1. `backdrop-filter: blur() saturate()` — the saturate is what stops the
+        blurred purple going grey and muddy underneath.
+     2. A bright inset line along the top edge, which is the specular highlight
+        a real pane catches. Without it the panel reads as tinted plastic.
+     3. A translucent light border rather than the theme's solid --border-color,
+        so the edge itself looks refractive.
+
+   The offset drop shadow stays — it is what keeps the brutalist identity and
+   stops the whole thing dissolving into the page. */
+/* `.lobby-layout` is deliberately not in this list any more. It is a frame,
+   not a panel, and it takes the landing box's rule at the foot of the file
+   instead — same fill, same bevel, same frost, so the three "one box on the
+   field" screens are one object. Its panels are the level that stops
+   frosting, below. */
+:root[data-theme='light'] .lobby-panel,
+:root[data-theme='light'] .brutal-card,
+:root[data-theme='light'] .modal-card,
+:root[data-theme='light'] .gartic-hero-section,
+:root[data-theme='light'] .draw-order,
+:root[data-theme='light'] .wl-panel,
+:root[data-theme='light'] .bluff-panel {
+  /* Thinner than it was (0.42/0.5): the tint is what the ground has to come
+     through, and at half strength the page gradient and the field's halftone
+     bands read through the pane instead of being sampled by it. Not zero —
+     a fill is still what makes this glass rather than an outline, and it is
+     what the specular and the lip are the edge *of*. */
+  background: linear-gradient(
+    160deg,
+    rgba(126, 66, 208, 0.2) 0%,
+    rgba(60, 14, 122, 0.26) 100%
+  );
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  border-width: 2px;
+  border-color: rgba(236, 222, 255, 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.1),
+    0 var(--shadow-offset, 6px) 0 rgba(40, 4, 82, 0.32);
+}
+
+/* The header is deliberately NOT glass: one flat purple, no gradient, no blur.
+   A gradient reads as a surface with a light on it, which is what a panel
+   wants; the header is a bar that spans the whole viewport, so its gradient
+   ran the full width of the screen and made the top of every page shade from
+   one purple to another. Flat `#4f079b` — the panel fill sampled from
+   lightmode.png, already set on this element further up the file — is a bar.
+
+   Two things follow from dropping the glass block here rather than overriding
+   it. There is no `border-width` on all four sides to undo any more (Tailwind's
+   preflight sets `border-style: solid` on everything, so the glass block's
+   width alone drew a pale rim across the top of the screen and down both
+   sides); vhs.css's own `border-bottom` is the only edge, which is the one
+   edge worth drawing on a bar flush to the viewport. And the specular
+   highlight is gone with the blur — it was an `inset 0 1px 0`, i.e. the same
+   pixel row as that top border, so it belonged to the glass and not to this.
+
+   Dark mode needs no rule: `header` is already flat `var(--bg-dark)`. */
+:root[data-theme='light'] .crt-viewport > header {
+  box-shadow: none;
+}
+
+/* Nested glass doubles the tint and goes opaque, so only ONE level may frost.
+   **The frame is now that level, not the panels** — which is how the landing
+   page has always been built: the box frosts and the two `.gartic-panel`s on
+   it do not. The lobby had it the other way round, and matching the two
+   screens means moving the frost up a level here rather than letting both
+   frost.
+
+   Note the direction this is written in. The obvious version — `.lobby-layout
+   .lobby-panel { backdrop-filter: none }` — matches *every* lobby panel,
+   because they are all inside the layout, which is fine now but was not when
+   the panel was the frosted level: it silently removed the glass from the only
+   screen it was meant to be seen on. Keep it keyed on the class itself.
+
+   The fill and the lip are the landing panels' (`#hero-section .gartic-panel`)
+   verbatim, so a lobby panel and a landing panel are the same object. They sit
+   on the *light* side of the step because the frame under them is the dark
+   recess — see the note on that rule. */
+:root[data-theme='light'] .lobby-panel {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: linear-gradient(160deg, rgba(122, 68, 202, 0.4) 0%, rgba(84, 34, 158, 0.46) 100%);
+  border: 2px solid rgba(236, 222, 255, 0.34);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    0 6px 0 rgba(24, 3, 60, 0.34);
+}
+
+/* Empty roster slots are glass too, one step darker — absence, not a card. */
+:root[data-theme='light'] .vhs-player {
+  background: rgba(38, 6, 86, 0.26);
+  border-width: 2px;
+  border-color: rgba(236, 222, 255, 0.3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+/* Tabs pick up the same treatment so the strip reads as part of the pane. */
+:root[data-theme='light'] .lobby-tab {
+  background: rgba(34, 6, 78, 0.46);
+  backdrop-filter: blur(10px) saturate(150%);
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
+}
+
+:root[data-theme='light'] .lobby-tab.active {
+  background: rgba(120, 62, 208, 0.45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+/* The cards stay solid. They are the one thing meant to sit *on* the glass
+   rather than be made of it, and frosting them would lose the panel/card
+   separation the reference is built on. .mode-card is in the list for the same
+   reason as the white ones even though it is dark: a frosted tile picks up the
+   panel's tint and stops being the flat backdrop its icon needs. */
+:root[data-theme='light'] .mode-card,
+:root[data-theme='light'] .deck-card,
+:root[data-theme='light'] .setting-row,
+:root[data-theme='light'] .lobby-item-card,
+:root[data-theme='light'] .bluff-option,
+:root[data-theme='light'] .bluff-reveal-row,
+:root[data-theme='light'] .wl-score-row,
+:root[data-theme='light'] .draw-order-row,
+:root[data-theme='light'] .prompt-card {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Inputs read better as glass than as white holes punched in a pane. */
+:root[data-theme='light'] .brutal-input,
+:root[data-theme='light'] .access-name-input {
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Panels are translucent now, so the CRT scanline overlay shows through them
+   and doubles up. Dropped entirely rather than dimmed further. */
+:root[data-theme='light'] .crt-viewport::before,
+:root[data-theme='light'] .crt-viewport::after {
+  opacity: 0;
+}
+
+/* `backdrop-filter` is the one thing here with no graceful degradation — an
+   unsupported browser gets a flat tint, which is why every rule above sets a
+   real `background` colour rather than relying on the blur to supply one. */
+@supports not (backdrop-filter: blur(1px)) {
+  :root[data-theme='light'] .lobby-panel,
+  :root[data-theme='light'] .lobby-layout,
+  :root[data-theme='light'] .brutal-card,
+  :root[data-theme='light'] .gartic-hero-section {
+    background: #2d0a63;
+  }
+  /* The header is not in this list any more: it is a flat colour in every
+     browser now, so there is no blur to degrade. */
+}
+
+/* ── The switch itself ── */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  font-size: 1rem;
+  line-height: 1;
+  border: 3px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--neon-yellow);
+  color: #12081f;
+  cursor: pointer;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4);
+}
+
+.theme-toggle:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.4);
+}
+
+.theme-toggle:active {
+  transform: translateY(1px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   EDGE LANGUAGE — the drop goes straight down, never diagonally
+   ══════════════════════════════════════════════════════════════════════
+   From `lightmode.png`. Its buttons and cards are rounded shapes with a light
+   rim and a hard shadow sitting *directly under* them — a chunky key you can
+   press — where vhs.css's brutalism throws the same hard shadow down and to the
+   right, which reads as a sticker peeled off the page. Same ink, same hardness,
+   same offset distance: only the axis changes.
+
+   Everything globals.css owns was rewritten in place. This block covers what
+   vhs.css owns, because that file is a verbatim copy of the prototype's
+   stylesheet and is not edited here (see the Conventions section of
+   CLAUDE.md). Only the classes this app actually renders are listed — the
+   prototype's remote control, sleeve case and role banner have no markup here.
+
+   Each rule keeps its own depth and its own colour and moves it to the Y axis;
+   the accent shadows (a ready console's green, an equipped item's ring) stay
+   the colour they were, or the state stops reading. Hover lifts become
+   `translateY` for the same reason — a diagonal lift under a vertical shadow
+   looks like two different materials.
+   ────────────────────────────────────────────────────────────────────── */
+
+/* Buttons. The compound `.btn-brutal.colour` selectors are what carry the
+   shadow in vhs.css, so matching `.btn-brutal` alone would lose on specificity
+   and silently change nothing. */
+.btn-brutal.yellow,
+.btn-brutal.magenta,
+.btn-brutal.cyan,
+.btn-brutal.dark,
+.btn-brutal.green {
+  box-shadow: 0 4px 0px var(--border-color);
+}
+
+.btn-brutal:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0px var(--border-color);
+}
+
+.btn-brutal:active {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0px var(--border-color);
+}
+
+.btn-brutal:disabled {
+  box-shadow: 0 4px 0px var(--border-color) !important;
+}
+
+/* Cards and panels. */
+.brutal-card,
+.modal-card,
+.gartic-panel,
+.voting-chat-box,
+.avatar-preview-container {
+  box-shadow: 0 var(--shadow-offset) 0px var(--border-color);
+}
+
+.brutal-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 var(--shadow-offset-hover) 0px var(--border-color);
+}
+
+/* The dashboard/landing container carries the deepest drop in the app. */
+.gartic-main-box {
+  box-shadow: 0 12px 0px var(--border-color);
+}
+
+/* A lobby console, and the same element wearing its voting-grid hat. */
+.vhs-player,
+.vhs-tape {
+  box-shadow: 0 4px 0px var(--border-color);
+}
+
+.vhs-player:hover,
+.vhs-tape:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 8px 0px var(--border-color);
+}
+
+.vhs-player.ready,
+.vhs-tape.ready {
+  box-shadow: 0 4px 0px var(--neon-green);
+}
+
+.vhs-tape.imposter-selected {
+  box-shadow: 0 6px 0px var(--neon-magenta);
+}
+
+.monitor-screen {
+  box-shadow: 0 5px 0px #000;
+}
+
+.monitor-screen:hover {
+  box-shadow: 0 7px 0px #000;
+}
+
+.vhs-player.monitor-screen:hover {
+  box-shadow: 0 8px 0px var(--border-color) !important;
+}
+
+.vhs-player.monitor-screen.voted-target {
+  box-shadow: 0 6px 0px var(--neon-magenta) !important;
+}
+
+.vote-stamp,
+.shop-owned-stamp {
+  box-shadow: 0 4px 0px #000;
+}
+
+.vcr-deck {
+  box-shadow: 0 6px 0px #000;
+}
+
+/* Shop. */
+.shop-tab:hover:not(.active) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 0px #000;
+}
+
+.shop-item-card,
+.shop-item-card.purchased:hover {
+  box-shadow: 0 var(--shadow-offset) 0px var(--border-color);
+}
+
+.shop-item-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 9px 0px var(--border-color);
+}
+
+.shop-item-card.equipped {
+  box-shadow: 0 var(--shadow-offset) 0px var(--neon-green), 0 0 20px rgba(0, 255, 102, 0.15);
+}
+
+/* Inputs lift on focus like a pressed key rather than sliding away. */
+.brutal-input:focus {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 0px var(--border-color);
+}
+
+/* The coin chip in the header. A miss in the original sweep of this block — it
+   is one of the classes this app renders (/dashboard and /shop), it just does
+   not appear on any screen the prototype has. Caught when the profile chip
+   landed beside it: two chips of the same construction throwing their shadows
+   on different axes is the exact thing this block exists to prevent. */
+.coin-balance-display {
+  box-shadow: 0 3px 0px #000;
+}
+
+/* ── /dashboard: the ground under the router box ──────────────────────
+   `.gartic-hero-section` is the wrapper *around* the box, and in light mode it
+   is one of the glass panels — so it drew a full-width frosted band across the
+   screen behind a box that is itself the panel here. It stays dissolved now
+   that the box is back, for the reason nested glass always is: only one level
+   may frost, or the tint doubles and both levels go opaque. The landing page
+   resolves the same collision the same way, further down.
+
+   Placed at the end of the file on purpose: the light-theme rule it has to beat
+   is `:root[data-theme='light'] .gartic-hero-section`, and matching that
+   specificity only wins from further down. */
+.gartic-hero-section:has(.router-box),
+:root[data-theme='light'] .gartic-hero-section:has(.router-box) {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  padding: 0;
+}
+
+/* ── The landing page is one field, not a band on a ground ────────────
+   Same collision as the dashboard above, resolved the other way round.
+   `.gartic-hero-section` is a glass panel and on the landing route it is
+   very nearly the whole screen, so light mode drew a bright purple band
+   with the darker page gradient showing as a strip above and below it —
+   two purples stacked, with a visible seam at each end of the band.
+
+   The band's colour is promoted to the page and the band itself dissolved,
+   rather than the band being dropped to reveal the ground: the light tone
+   is what this screen is meant to look like, and the darker gradient was
+   only ever there to be frosted over.
+
+   The stops come from sampling the *rendered* band (glass over the old
+   gradient) and then tuning until the rendered page matches it again, not
+   from the glass's own rgba pair — the point is that nothing changes
+   except the seam. The start sits lighter than the sampled corner because
+   a 160deg gradient line starts off-canvas, so the top-left pixel is
+   already some way along it; check the corners, not the stop values.
+   Padding stays on the section; it is what positions the box.
+
+   **The gradient itself is no longer here.** It used to be keyed on
+   `:has(#hero-section)` to stay landing-only, which made / a visibly lighter
+   app than /dashboard; it is now the light theme's page background for every
+   route, up where the theme is declared. What is left on this selector is
+   only the part that really is landing-specific: dissolving the section so
+   the box is the one thing on the field. */
+:root[data-theme='light'] #hero-section.gartic-hero-section {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* ── …and the box on it is the glass ──────────────────────────────────
+   With the section dissolved above, `.gartic-main-box` is the one frosted
+   level left on this route, and it was never in the liquid-glass list: it
+   kept a flat 4px `--border-color` stroke and a 12px pale offset band,
+   which rendered as a grey outline drawn around a dark slab.
+
+   The edge is built from `lightmode.png`, scanned across the frame rather
+   than sampled at a point. The reference does not draw a line — it draws a
+   *bevel*: a few pixels of soft darkening outside (`#5c1cb3` shading down
+   from the `#6f1bdd` field), then a bright 2px lip (`#7e3ed4`), then the
+   interior. Its panels repeat it at `#46078f` -> `#8140d7` -> fill. So the
+   three parts here are the translucent light border (the lip), the
+   `inset 0 1px 0` specular along the top, and a soft dark outer shadow for
+   the shading — and the offset drop shadow stays, in the glass block's
+   translucent ink rather than the pale `--border-color` band, because it
+   is what keeps the brutalist identity under the glass.
+
+   The fill goes translucent with it. A bright lip on an opaque slab reads
+   as a drawn outline, not as an edge with depth: the blur behind it is
+   what the lip is the edge *of*. Kept dark so the two inner panels still
+   read as the darker things on it, which is the structure the reference
+   has (light frame, darker panels inside it). */
+/* `.router-box` and `.lobby-layout` ride along: /dashboard and the lobby have
+   the same structure — one box on a field, with panels on it — so they take
+   the same bevel, or light mode draws the flat grey outline described above
+   around the three doors and a lavender hairline around the lobby. These three
+   selectors are the whole of "the frame" in this app; keep them together. */
+:root[data-theme='light'] #hero-section .gartic-main-box,
+:root[data-theme='light'] .gartic-main-box.router-box,
+:root[data-theme='light'] .lobby-layout {
+  /* Darker than the ground and in the ground's own ink, so the box reads as a
+     recess the panels are set into rather than as a lit pane over the page.
+     Both halves of that had to change: the tint went from a light violet
+     (88,38,172) to the page's own deep purple, *and* the saturate came down
+     from 180% to 115%. The saturate was doing most of the lightening — it
+     boosts the blurred backdrop, so the box came out brighter and more
+     saturated than the field around it however dark the tint over it was. */
+  background: linear-gradient(160deg, rgba(30, 8, 74, 0.34) 0%, rgba(18, 4, 54, 0.4) 100%);
+  backdrop-filter: blur(24px) saturate(115%);
+  -webkit-backdrop-filter: blur(24px) saturate(115%);
+  border: 2px solid rgba(236, 222, 255, 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.1),
+    /* The shading the reference puts *outside* the lip. Unoffset and blurred,
+       so it sits on all four sides — the offset shadow below only darkens
+       under the box, and the reference darkens above the top edge too. */
+    0 0 16px rgba(26, 3, 62, 0.3),
+    0 8px 0 rgba(40, 4, 82, 0.3),
+    0 12px 26px rgba(26, 3, 62, 0.28);
+}
+
+/* The two panels inside take the same bevel one step down, or a glass frame
+   ends up holding two flat grey outlines — which is what the box itself looked
+   like before. They do not frost: nested glass doubles the tint and goes
+   opaque (see the note above the lobby rules), and these are the things meant
+   to sit on the glass rather than be made of it. */
+:root[data-theme='light'] #hero-section .gartic-panel {
+  /* These used to be the *darker* level, which is how the reference stacks a
+     frame and its panels (#4f079d inside #6f1bdd). The box is now the darker
+     one — it is a recess rather than a lit pane — so the step inverts and the
+     panels take the light side of it. The step is what matters, not which way
+     round it runs: two levels at one value read as a flat field with a hairline
+     drawn across it, whichever value they share. Note these blend against the
+     *box*, not against the page, which is why the tint has to be this much
+     lighter than it looks like it should be to lift at all. */
+  background: linear-gradient(160deg, rgba(122, 68, 202, 0.4) 0%, rgba(84, 34, 158, 0.46) 100%);
+  border: 2px solid rgba(236, 222, 255, 0.34);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    0 6px 0 rgba(24, 3, 60, 0.34);
+}
+
+/* ── Texture on the frame ──────────────────────────────────────────────
+   The frames — `.lobby-layout` and `.gartic-main-box`, the things the panels
+   sit inside — were the one surface in the app with nothing on them: a flat
+   tint between a textured field and a set of textured cards, which read as a
+   gap rather than as a material. This puts a fine halftone on them.
+
+   It is deliberately NOT the field's texture at a smaller size. The field runs
+   14px dots packed into diagonal bands with empty purple between (see
+   `.field-texture`), and repeating that inside a frame that sits *on* the field
+   produces two lattices of the same kind at slightly different phases — moiré,
+   or at best a printing error. This is the finer, quieter relative: an even 9px
+   staggered lattice of 1.6px dots, no banding and no mask, at an alpha low
+   enough that it reads as grain in the surface rather than as dots you could
+   count. Even spacing is right *here* for the same reason it was wrong on the
+   field — the field is large enough that a uniform lattice reads as graph
+   paper, and a frame is not.
+
+   White rather than black, in both themes: the frames are translucent over a
+   purple ground, so a dark dot punches a hole through the pane and reads as
+   dirt behind the glass, while a light one reads as the surface catching the
+   light — which is the same thing the specular lip along the top edge is
+   doing. Light mode carries slightly more of it, having more light in it.
+
+   Three implementation notes. The overlay is a pseudo-element because both
+   frames already have a `background` doing other work (a tint, or a gradient),
+   and a second background layer would have to be declared in the same shorthand
+   every theme rule overwrites. It is `position: absolute`, which is what keeps
+   it out of `.lobby-layout`'s grid — a pseudo-element of a grid container is
+   otherwise a grid item and would take a cell. And it is `z-index: -1` under an
+   `isolation: isolate` parent: a negatively stacked child paints after its
+   parent's background but before the parent's in-flow content, so the grain
+   lands on the frame's own tint and under every panel on it, while the
+   isolation is what stops that -1 escaping to an ancestor's stacking context
+   and sliding behind the page. */
+.lobby-layout,
+.gartic-main-box {
+  position: relative;
+  isolation: isolate;
+}
+
+.lobby-layout::before,
+.gartic-main-box::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+  background-image:
+    radial-gradient(circle at 0 0, rgba(255, 255, 255, 0.05) 1.6px, transparent 2px),
+    radial-gradient(circle at 4.5px 4.5px, rgba(255, 255, 255, 0.05) 1.6px, transparent 2px);
+  background-size: 9px 9px, 9px 9px;
+}
+
+:root[data-theme='light'] .lobby-layout::before,
+:root[data-theme='light'] .gartic-main-box::before {
+  background-image:
+    radial-gradient(circle at 0 0, rgba(255, 255, 255, 0.08) 1.6px, transparent 2px),
+    radial-gradient(circle at 4.5px 4.5px, rgba(255, 255, 255, 0.08) 1.6px, transparent 2px);
+}
+
+/* ── 404 ───────────────────────────────────────────────────────────────
+   The box is `.gartic-main-box.router-box` (see not-found.tsx for why), so
+   everything here is only the column inside it.
+
+   The colour bars are the SMPTE pattern at its broadcast values — 75% white
+   through blue, left to right — which is what a deck puts up when there is
+   nothing on the channel. Hard stops rather than a blended gradient: a
+   gradient that fades between bars reads as a colour wash, and the whole point
+   of a test card is that the boundaries are exact. They keep their own colours
+   in both themes for the same reason `.draw-card` and `.osd-menu` do — this is
+   a screen within the page, not a surface the theme paints. */
+.notfound-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 16px;
+}
+
+.notfound-code {
+  font-size: 4.4rem;
+  line-height: 1;
+  margin: 0;
+}
+
+.notfound-bars {
+  width: 100%;
+  max-width: 420px;
+  height: 84px;
+  border: 3px solid #000;
+  border-radius: 8px;
+  box-shadow: 0 4px 0 #000;
+  overflow: hidden;
+  position: relative;
+  background: linear-gradient(
+    90deg,
+    #c0c0c0 0 14.2857%,
+    #c0c000 14.2857% 28.5714%,
+    #00c0c0 28.5714% 42.8571%,
+    #00c000 42.8571% 57.1428%,
+    #c000c0 57.1428% 71.4285%,
+    #c00000 71.4285% 85.7142%,
+    #0000c0 85.7142% 100%
+  );
+}
+
+/* The tracking band a mistracked tape rolls up the picture. Static rather than
+   animated: the shell already runs a moving tracking line over every screen,
+   and two of them at different speeds reads as a rendering fault. */
+.notfound-bars::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.18) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+.notfound-title {
+  font-family: var(--font-brutal);
+  font-size: 1.5rem;
+  letter-spacing: 1px;
+  color: #ffffff;
+  margin: 0;
+}
+
+.notfound-copy {
+  max-width: 44ch;
+  color: var(--ink-mute);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.notfound-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+/* A phone gets the mark and the words; the test card is the first thing to go
+   when the column has to fit above the fold. */
+@media (max-width: 480px) {
+  .notfound-code { font-size: 3.2rem; }
+  .notfound-bars { height: 56px; }
+  .notfound-title { font-size: 1.15rem; }
+  .notfound-actions .btn-brutal { width: 100%; }
+}
+
+/* The room-code field needs no light-mode rule at all any more. It used to
+   carry `.osd-text`, and `:root[data-theme='light'] .osd-text` paints that
+   white — three selectors against `.router-code-input`'s one — so the code
+   went white on the white fill and vanished as it was typed, and a black ink
+   had to be restated here at matching specificity. Dropping the class dropped
+   the collision with it: the base rule's `color: #000` now stands in both
+   themes. Put `.osd-text` back on this input and the ink goes with it. */
+
+/* ── Page transitions ──────────────────────────────────────────────────
+   Every route arrives the same way: it rises a little, scales up from just
+   under full size, and settles with a small overshoot. That curve is the
+   whole character of it — a plain ease-out reads as a fade, and the reference
+   this is modelled on (Gartic Phone) lands its screens with a bounce. The
+   overshoot lives in the cubic-bezier's third control point going past 1,
+   which is why the keyframes themselves are a straight A-to-B.
+
+   Both selectors animate the same object at the two levels the app has: the
+   content box on a `home` route, and the phase panel in a room. In-game that
+   means the lobby → watch → words → vote → results moves get it too, which is
+   the point — those are page changes as far as a player is concerned. It also
+   replaces vhs.css's `view-fade-in` on the same element (a later rule at equal
+   specificity), including its `translateY(0)` end state: an identity transform
+   is still a transform, so it leaves a containing block behind that anything
+   `position: fixed` inside the panel would then be trapped in. This ends at
+   `none`.
+
+   The animation runs on mount, and CrtShell keys the subtree on the pathname
+   so a navigation that React would otherwise reconcile in place still counts
+   as one. */
+@keyframes route-enter {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* `backwards`, not `both`. The fill has to reach backwards — the `from` values
+   must apply between the element existing and the animation starting, or the
+   page paints once at full size and then jumps back to do the animation. It
+   must NOT reach forwards: a retained final value is the *interpolated* one,
+   and `transform: none` interpolates as an identity matrix, so `forwards`
+   leaves `matrix(1,0,0,1,0,0)` on the element permanently. An identity
+   transform is still a transform, and it makes the panel a containing block
+   for any `position: fixed` descendant — which is how a modal ends up trapped
+   inside a scrolling panel. Measured: `both` computes to a matrix at rest,
+   `backwards` computes to `none`. */
+.home-scroll-area > *,
+.view-panel.active-view {
+  animation: route-enter 340ms cubic-bezier(0.2, 0.9, 0.25, 1.15) backwards;
+}
+
+/* Reduced motion keeps the fade and drops the movement — the screen still
+   reads as having changed, which is what the animation is for, without the
+   travel. Not `animation: none`: someone who asked for less motion did not ask
+   for no feedback. Redefining the keyframes inside the query is what removes
+   the transform; the shorthand above is left alone, so the `backwards` fill
+   still applies. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes route-enter {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .home-scroll-area > *,
+  .view-panel.active-view {
+    animation-duration: 180ms;
+    animation-timing-function: ease-out;
+  }
+}
+
+/* ── Wordmark type ─────────────────────────────────────────────────────
+   The header's "TAPE SUSPECT" treatment as a modifier anything can wear:
+   yellow fill, 2px black stroke, 4px 4px black drop. Currently on /login's
+   heading.
+
+   Both rules are needed and neither is redundant. The base one restates what
+   vhs.css's `.brutal-title` already does, so the modifier is self-contained
+   rather than an inherited accident. The light-mode one is what makes it work
+   at all: `:root[data-theme='light'] .brutal-title` repaints every title white
+   at three selectors' worth of specificity, and `.brutal-title.title-wordmark`
+   is only two — the theme rule would win. Four beats three.
+
+   Same three values as the `.logo-container .brutal-title` rule further up.
+   They are deliberately duplicated rather than shared: that rule is about the
+   wordmark being the brand and keeping its colours in both themes, this one is
+   about a heading choosing to look like the wordmark, and folding them into one
+   selector list would mean any change to the brand silently restyles page
+   headings too. */
+.brutal-title.title-wordmark {
+  color: var(--neon-yellow);
+  -webkit-text-stroke: 2px #000000;
+  text-shadow: 4px 4px 0px #000000;
+}
+
+:root[data-theme='light'] .brutal-title.title-wordmark {
+  color: var(--neon-yellow);
+  -webkit-text-stroke: 2px #000000;
+  text-shadow: 4px 4px 0px #000000;
+}
+
+/* The auth card's heading, a step up from `.modal-title`'s 2rem. Its own class
+   rather than a bigger `.modal-title` (which is shared with every real modal)
+   and rather than a size on `.title-wordmark` (which is about ink, so that a
+   heading wearing the wordmark's colours can still be any size). Later in the
+   cascade than vhs.css at equal specificity, which is what lets it win. */
+.auth-title {
+  font-size: 2.3rem;
+}
+
+/* The submit button sits between the last field and the footer link, so it
+   needs air on both sides. vhs.css gives `.modal-actions` an 8px top margin —
+   right in a modal, where the button is the last thing in the box, and wrong
+   here: measured, the button was 8px under the password field and 36px above
+   "NO ACCOUNT?", so it read as attached to the input and adrift from the rest.
+
+   24px above against the box's own 20px flex gap below. Deliberately not equal:
+   `.btn-brutal` throws a `0 4px 0` drop shadow, so the button occupies 4px more
+   than its box on the underside and two equal gaps look bottom-heavy. */
+.auth-actions {
+  margin-top: 24px;
+}
+
+/* The field block sits between the strapline and the submit button, and it was
+   44px below one and 24px above the other — measured, not eyeballed, which is
+   the only way to catch it: the 44 is `.modal-subtitle`'s own 24px bottom
+   margin plus the box's 20px flex gap, two spacings from two different
+   stylesheets stacking up. Trimming the margin to 4px leaves the gap the
+   container sets, and 24/24 either side. */
+.auth-subtitle {
+  margin-bottom: 4px;
+}
+
+/* ── OAuth buttons: the provider marks ─────────────────────────────────
+   The mark is pinned to the left edge rather than sitting in `.btn-brutal`'s
+   centred flex row. Centred, the group is mark + label, so a button reading
+   "CONTINUE WITH APPLE" puts its logo several pixels right of the one reading
+   "CONTINUE WITH GOOGLE" — two logos that do not line up in a stack of two
+   buttons. Pinning costs the symmetric padding, which is what the 46px inline
+   padding restores: the label stays optically centred between the mark and the
+   right edge. `.btn-brutal` is already `position: relative`, so there is
+   nothing to add for the absolute child to hang off.
+
+   Slightly smaller than a `.btn-brutal` default (1.15rem/12px 24px): these sit
+   under the primary submit and must not out-shout it, the same argument as
+   `.header-signin-btn`. */
+.oauth-btn {
+  font-size: 0.95rem;
+  padding: 11px 46px;
+}
+
+.oauth-btn-label {
+  /* The label is the flex row's only in-flow child once the mark is absolute,
+     so it centres on its own. Kept as an element rather than a bare string so
+     the "REDIRECTING…" swap does not reflow the mark. */
+  line-height: 1.1;
+}
+
+/* The white tile the mark sits on. Google's brand guidelines require its four
+   colours unaltered, so unlike every other glyph in the app it cannot take the
+   button's ink — and four saturated colours on a saturated button have nothing
+   to read against. A white chip is the standard answer and it gives Apple's
+   monochrome mark somewhere consistent to sit, so the pair matches.
+
+   The 2px black rim and the radius are what keep it in the brutalist family
+   rather than looking like a sticker dropped on the button. No drop shadow: it
+   is inset furniture on a raised object, not a second raised object. */
+.oauth-mark {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: #ffffff;
+  border: 2px solid #000000;
+  border-radius: 7px;
+  flex-shrink: 0;
+}
+
+/* ── Header profile chip and its menu ──────────────────────────────────
+   The signed-in player's face in the top right, and the menu it opens.
+   Deliberately built from `.coin-balance-display`'s parts — it sits directly
+   beside that chip on /dashboard and /shop, so a different fill, rim weight or
+   radius would read as two unrelated controls rather than as a row. Cyan
+   rather than the coin chip's yellow is the whole of the difference, which is
+   the same cyan /dashboard already used for the static name read-out this
+   replaces. */
+.header-profile {
+  position: relative;
+  /* Beats `.home-scroll-area`'s z-index: 10 and `.camcorder-hud`'s 100 so the
+     dropdown paints over the page rather than under it. Note the header is a
+     *flex item* of #crt-viewport, which is what makes those z-indexes apply at
+     all despite both being `position: static` — and why raising the header
+     itself was the wrong fix: it would have pulled the REC indicator and the
+     corner brackets behind the bar with it. Only this one control floats.
+     Still under `.modal-overlay` (999) and the scanlines (998). */
+  z-index: 500;
+}
+
+.header-profile-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  background-color: #000;
+  border: 3px solid var(--neon-cyan);
+  border-radius: 10px;
+  padding: 5px 12px;
+  cursor: pointer;
+  /* Straight down, per the EDGE LANGUAGE block above. */
+  box-shadow: 0 3px 0 #000;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+
+.header-profile-chip:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 0 #000;
+}
+
+.header-profile-chip:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 #000;
+}
+
+.header-profile-face {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.header-profile-name {
+  /* The landing page's name field, verbatim (.access-name-input): Outfit at
+     600 with 0.5px tracking. Both are the same thing — the player's own name —
+     so they are set in the same face, and a name read back in the header should
+     look like the name they typed. This was Permanent Marker, which is a
+     handwriting face: charming on a cassette label, and wrong on the one piece
+     of type that has to be legible at a glance in a 26px bar. */
+  font-family: var(--font-ui);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  font-size: 1.1rem;
+  color: var(--neon-cyan);
+  /* A display name is 20 characters and the header is one row — see the MOBILE
+     block's note about the wordmark costing the bar a second line. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-profile-caret {
+  font-size: 0.7rem;
+  color: var(--neon-cyan);
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.header-profile-caret.open {
+  transform: rotate(180deg);
+}
+
+.header-profile-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background-color: var(--bg-dark);
+  border: 3px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 4px 0 var(--border-color);
+}
+
+.header-profile-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-osd);
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.header-profile-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--neon-cyan);
+}
+
+.header-profile-item.danger:hover {
+  color: var(--neon-magenta);
+}
+
+/* ── /profile ──────────────────────────────────────────────────────────
+   The account holder's version of the landing page's Profile panel. Only the
+   three things /login and /signup do not already supply get rules here; the
+   frame, the heading and the field rhythm are those pages' classes verbatim,
+   because it is the fourth screen in that family. */
+.profile-notice {
+  display: block;
+  margin: 12px 0;
+  padding: 8px 12px;
+  border: 2px solid var(--neon-green);
+  border-radius: 8px;
+  color: var(--neon-green);
+  text-align: center;
+}
+
+/* The email, which is shown but not editable. Built to sit in the same column
+   as `.brutal-input` without being one — a disabled input would read as a
+   field that is merely switched off, i.e. as something that could be switched
+   on, which is not what this is. */
+.profile-readonly {
+  padding: 10px 14px;
+  border: 2px dashed var(--border-color);
+  border-radius: 8px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+/* BACK and SIGN OUT: two peers, so they share a row and a width rather than
+   stacking under the primary SAVE. */
+.profile-exits {
+  display: flex;
+  gap: 10px;
+}
+
+.profile-exit-btn {
+  flex: 1;
+  font-size: 0.9rem;
+  padding: 9px 14px;
+  text-decoration: none;
+}
+
+/* ── Light mode for the three additions above ──────────────────────────
+   Appended here rather than inside the light-mode block further up, so each
+   new component's two themes stay next to each other. Specificity is
+   unchanged, and being later in the file these win the same way that block's
+   own rules do. */
+:root[data-theme='light'] .header-profile-chip {
+  background: linear-gradient(180deg, #ffffff 0%, #d4c4fc 100%);
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 3px 0 rgba(20, 4, 54, 0.28);
+}
+
+:root[data-theme='light'] .header-profile-chip:hover {
+  box-shadow: 0 5px 0 rgba(20, 4, 54, 0.28);
+}
+
+:root[data-theme='light'] .header-profile-chip:active {
+  box-shadow: 0 1px 0 rgba(20, 4, 54, 0.28);
+}
+
+:root[data-theme='light'] .header-profile-name,
+:root[data-theme='light'] .header-profile-caret {
+  color: #2f0968;
+}
+
+/* The menu is a card, so it takes the white-card treatment — and stays solid
+   rather than frosted, for the reason the other white cards do: it is the
+   thing meant to sit *on* the glass. */
+:root[data-theme='light'] .header-profile-menu {
+  background: linear-gradient(180deg, #ffffff 0%, #d4c4fc 100%);
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 4px 0 rgba(20, 4, 54, 0.28);
+}
+
+:root[data-theme='light'] .header-profile-item {
+  color: #2f0968;
+}
+
+:root[data-theme='light'] .header-profile-item:hover {
+  background: rgba(47, 9, 104, 0.1);
+  color: #2f0968;
+}
+
+:root[data-theme='light'] .header-profile-item.danger:hover {
+  color: #b3005c;
+}
+
+:root[data-theme='light'] .profile-readonly {
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #e5dbff;
+}
+
+/* ── Phone: the header is one row, and a 20-char name does not fit in it ──
+   A media query of its own rather than an entry in the MOBILE block above,
+   because these rules have to out-rank the light-mode ones they follow and a
+   media query adds no specificity — inside that block they would sit ahead of
+   the theme rules and lose. Same breakpoint the block uses. */
+@media (max-width: 768px) {
+  /* The name goes the way the wordmark and the page label do, and for the same
+     reason: the bar is one row and something has to give. The face is what
+     identifies the control, and it survives — as does the caret, which is what
+     says it opens something. */
+  .header-profile-name {
+    display: none;
+  }
+
+  .header-profile-chip {
+    padding: 5px 9px;
+    gap: 6px;
+  }
+
+  /* "CONTINUE WITH GOOGLE" at 0.95rem overruns a 480px card's inner width. */
+  .oauth-btn {
+    font-size: 0.8rem;
+    padding: 10px 42px;
+  }
+
+  .oauth-mark {
+    width: 24px;
+    height: 24px;
+    left: 8px;
+  }
+}
+
+/* ── The marker font is retired ────────────────────────────────────────
+   Permanent Marker is a single-weight handwriting face. It was doing two
+   different jobs: labelling props that are *meant* to look handwritten (a
+   cassette's title, a shop item's name) and setting real UI text — a player's
+   name in the header, a room code on a button, the fields you paste a URL or
+   type a prompt into. The second job is one it cannot do: at 1rem in a header
+   bar it is the least legible type on the screen, and a URL read back in
+   handwriting is close to unreadable. So it is replaced everywhere by the UI
+   face, which is what the landing page's name field has always used.
+
+   Two halves, because `vhs.css` is not edited here. Everything this app owns
+   now names `--font-ui` directly — .header-profile-name, .lobby-invite-code,
+   and the three inline field styles in VideoSetupPanel, CustomContentPanel and
+   /dashboard's guest chip. What vhs.css owns is redirected at the token
+   instead: `--font-marker` no longer holds a marker font.
+
+   Read the name as a *slot*, the way `--neon-green` is read as the accent slot
+   rather than as a colour once light mode fills it with pink. Aliasing beats
+   listing selectors here for a reason worth keeping: a rule copied across from
+   `vhs-frontend-example` later cannot silently reintroduce the handwriting
+   face, because there is no longer anything behind that name to reintroduce.
+   The @import still asks Google Fonts for the family and that costs nothing —
+   the CSS declares an @font-face, and the browser fetches the file only when a
+   rule actually uses it. Nothing does now. */
+:root {
+  --font-marker: var(--font-ui);
+}
+
+/* Outfit's default 400 is markedly lighter than Permanent Marker's single
+   heavy weight, so a straight family swap left every one of these reading as
+   though it had been de-emphasised. 600 is what the landing page's name field
+   uses and what carries the same presence. Only the five that vhs.css owns
+   *and* this app actually renders are listed — .sleeve-code,
+   .video-placeholder-title and .font-handwritten have no markup in src/, the
+   way the EDGE LANGUAGE block above lists only what is rendered. Tracking is
+   deliberately not set: .lobby-invite-code wants its own 3px and the rest are
+   fine at zero. */
+.tape-title,
+.reveal-value,
+.compact-label,
+.shop-item-name,
+.lobby-item-host {
+  font-weight: 600;
 }

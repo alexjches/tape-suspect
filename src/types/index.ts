@@ -5,7 +5,17 @@
 //   playing      video + Ready Check
 //   words        turn-based word phase, 10s each
 //   deliberation ONE 90s window, chat and voting live simultaneously
-export type GamePhase = 'lobby' | 'playing' | 'words' | 'deliberation' | 'results';
+export type GamePhase =
+  | 'lobby'
+  | 'playing'
+  | 'words'
+  | 'drawing'
+  | 'clue'
+  | 'guessing'
+  | 'writing'
+  | 'bluffvote'
+  | 'deliberation'
+  | 'results';
 
 export type ChatType = 'text' | 'voice' | 'video' | 'none';
 
@@ -32,6 +42,13 @@ export interface PlayerPublic {
    */
   isSpectator: boolean;
   status: 'connected' | 'disconnected';
+  /**
+   * A simulated player added for testing (`room:addBots`). Broadcast on
+   * purpose and rendered as a badge: a lobby has to be honest about which of
+   * its players are furniture, otherwise the feature is indistinguishable
+   * from quietly padding a room with fake humans.
+   */
+  isBot?: boolean;
   /** Equipped cosmetics (section 10) — what everyone else sees you wearing. */
   cosmetics: EquippedCosmetics;
 }
@@ -50,19 +67,47 @@ export interface RoomPublic {
    * the reveal until both rounds are done.
    */
   accusedIds: string[];
-  /** Who supplied the Custom links, and so sits out a Custom round (§4). */
-  customVideoAuthorId: string | null;
+  /** Who supplied the custom content, and so sits the round out (§4). */
+  customContentAuthorId: string | null;
+  /**
+   * The Wavelength scale, public because everyone is guessing on it. The
+   * target and the psychic's identity are NOT here and must not be added —
+   * that split is the whole secrecy surface of the mode.
+   */
+  spectrum: Spectrum | null;
+  /** The psychic's clue, public the moment it is submitted. */
+  psychicClue: string | null;
   players: PlayerPublic[];
   settings: {
     isPublic: boolean;
     maxPlayers: number;
+    /**
+     * Is the round running on content the host typed rather than on the mode's
+     * pool? Public because it decides whether somebody is sitting out, which
+     * the lobby has to be able to say before anyone presses start.
+     */
+    useCustomContent: boolean;
     hasNormalVideo: boolean;
     hasImposterVideo: boolean;
+    /**
+     * Whether each half of a custom prompt pair has been filled in. Booleans
+     * for the same reason the videos are booleans: the text is the answer.
+     */
+    hasNormalPrompt: boolean;
+    hasImposterPrompt: boolean;
     wordsPerPlayer: number;
     imposterCount: number;
     chatType: ChatType;
     voteVisibility: VoteVisibility;
     videoCategory: string | null;
+    /**
+     * Fake Artist difficulty: does the fake get a category hint?
+     *
+     * Safe to broadcast — it says what *kind* of information exists in the
+     * round, not who holds it. Everyone needs to know whether the fake is
+     * drawing blind, because it changes how suspicious a bad stroke is.
+     */
+    themeHint: boolean;
   };
   /**
    * Voter -> target. Empty in an anonymous lobby, where individual ballots
@@ -70,6 +115,15 @@ export interface RoomPublic {
    * rather than inferring "nobody has voted" from an empty object.
    */
   votes: Record<string, string>;
+  /**
+   * Whether this server will accept `room:addBots`.
+   *
+   * A server capability rather than a room setting, echoed onto every room so
+   * the client never has to guess. The alternative — a NEXT_PUBLIC_ env var —
+   * lets the button and the handler disagree, which shows up as a control
+   * that is visible and silently does nothing.
+   */
+  botsAllowed: boolean;
   createdAt: number;
 }
 
@@ -77,8 +131,90 @@ export interface RoomPublic {
 // there is deliberately no `isImposter` here. A client that knows its own
 // role can read it out of devtools, which defeats the core mechanic. The
 // role is only ever revealed in GameResults, after voting closes.
+//
+// Exactly one field is set, decided by the mode's style: a video round deals
+// `videoUrl`, a Words or Questions round deals `prompt`. Crew and suspect get
+// the same shape either way — that is the whole point.
 export interface GameAssignment {
-  videoUrl: string;
+  /** Video rounds only. */
+  videoUrl?: string;
+  /** Word and question rounds only: your card, and only ever yours. */
+  prompt?: string;
+  /**
+   * Fake Artist only, and the one place in the game a player is told their own
+   * role.
+   *
+   * Everywhere else this field would be a bug: a client that knows it is the
+   * suspect can read that out of devtools, which is why video/word/question
+   * rounds deal a near miss instead and `isFake` is left undefined. Here the
+   * fake knowing *is* the mechanic — they have to bluff a stroke with no word.
+   * The invariant that still holds without exception is the other half: nobody
+   * learns anyone **else's** role, so `imposterIds` never rides a broadcast.
+   */
+  isFake?: boolean;
+  /** The crew's word. Absent for the fake. */
+  drawWord?: string;
+  /**
+   * The fake's category hint, when `settings.themeHint` is on. Absent for the
+   * crew — they have the word, and handing them the theme as well would tell
+   * them exactly how much the fake knows.
+   */
+  themeHint?: string;
+  /**
+   * Wavelength: the hidden target, 0-100 — dealt to the psychic alone. The
+   * spectrum itself is public (everyone needs the scale they are guessing on);
+   * this number and who holds it are the only secrets in the mode.
+   */
+  target?: number;
+  /** True for the one player who can see the target. */
+  isPsychic?: boolean;
+}
+
+/** A public scale, both ends visible to everyone. */
+export interface Spectrum {
+  left: string;
+  right: string;
+}
+
+/**
+ * One entry on the Bluff ballot.
+ *
+ * `authorId` is deliberately absent: the whole round is not knowing whose
+ * definition is whose. Authors are attached only in `game:results`.
+ */
+export interface BluffOption {
+  /** A player id, or REAL_DEFINITION_ID for the true one. */
+  id: string;
+  text: string;
+}
+
+/** One player's line on a scored round's final table. */
+export interface ScoreLine {
+  playerId: string;
+  name: string;
+  avatar: string;
+  points: number;
+  /** Human-readable working, e.g. "guessed 61, target 58 — 3 off". */
+  detail: string;
+}
+
+/**
+ * One stroke on the shared canvas.
+ *
+ * Points are normalised to 0..1 against the canvas box rather than sent as
+ * pixels, because the phone drawing at 390px wide and the laptop watching at
+ * 1440px have to see the same picture. Denormalising is the renderer's job.
+ */
+export interface DrawStroke {
+  playerId: string;
+  playerName: string;
+  /** Flat [x0, y0, x1, y1, …] in 0..1. Flat rather than {x,y} pairs: this goes
+   *  over the wire several times a round and halves the JSON. */
+  points: number[];
+  /** Assigned per player from a fixed palette, so you can read who drew what. */
+  colour: string;
+  /** Which stroke this is for that player (1-based), mirroring GameWord. */
+  strokeIndex: number;
 }
 
 export interface VoteTally {
@@ -104,6 +240,29 @@ export interface VoteTally {
 }
 
 export interface GameResults {
+  /**
+   * Which shape of round this was, and therefore which half of the results
+   * screen means anything.
+   *
+   *   accusation  a hidden role was ejected — every imposter/vote field below
+   *               is populated, `scores` is null
+   *   score       nobody was hiding; `scores` is the result and the imposter
+   *               and ballot fields are empty placeholders
+   *
+   * A discriminant rather than a union type: GameResults is threaded through
+   * the socket layer, the wallet, `room.lastResults` and a large results
+   * screen, and splitting the type would touch all of them to express a
+   * difference that one field and one branch cover.
+   */
+  kind: 'accusation' | 'score';
+  /** Non-null only when kind is 'score'. Highest first. */
+  scores: ScoreLine[] | null;
+  /** The scale that was played, on a spectrum round. */
+  spectrum: Spectrum | null;
+  /** The hidden target and the psychic, revealed now. */
+  spectrumTarget: number | null;
+  psychicId: string | null;
+  psychicClue: string | null;
   imposterId: string;       // primary imposter (backwards compat)
   imposterIds: string[];    // all imposters
   imposterName: string;
@@ -125,8 +284,21 @@ export interface GameResults {
   crewWins: boolean;
   tally: Record<string, number>;
   // Safe to send only now that voting has closed — compare the two tapes.
+  // Empty strings on a word/question round, where the pair below is the reveal.
   normalVideoUrl: string;
   imposterVideoUrl: string;
+  /** The two cards on a Words or Questions round; null on a video round. */
+  normalPrompt: string | null;
+  imposterPrompt: string | null;
+  /** What the crew were drawing, and the hint the fake had. Null elsewhere. */
+  drawWord: string | null;
+  drawTheme: string | null;
+  /** Bluff: the word, the true definition, and who wrote what. */
+  bluffWord: string | null;
+  bluffTruth: string | null;
+  bluffReveal:
+    | { id: string; text: string; authorName: string; isReal: boolean; votes: number }[]
+    | null;
   players: {
     id: string;
     name: string;
@@ -164,6 +336,51 @@ export interface GameWord {
   word: string;
   wordIndex: number;   // which word this is for that player (1-based)
   timestamp: number;
+}
+
+// ─── Live reactions during the video (spec §5) ───────────────────────
+/**
+ * The five reactions §5 names. A closed set on purpose, and shared by both
+ * sides: the client renders these buttons, the server rejects anything that
+ * is not one of them. An open emoji field would be a 300-char chat channel
+ * during the one phase that has no chat.
+ */
+// CHANGING THIS LIST MEANS REGENERATING A FONT. The bundled emoji subset
+// (public/fonts/emoji-reactions.woff2) covers exactly these five codepoints,
+// and the @font-face `unicode-range` in globals.css lists them out. A sixth
+// emoji added here renders in the platform font instead — no error, it just
+// looks wrong next to the others. See public/fonts/README.md.
+export const REACTION_EMOJI = ['😂', '😮', '😢', '🔥', '👀'] as const;
+
+export type ReactionEmoji = (typeof REACTION_EMOJI)[number];
+
+export function isReactionEmoji(value: unknown): value is ReactionEmoji {
+  return (REACTION_EMOJI as readonly unknown[]).includes(value);
+}
+
+/**
+ * One reaction, broadcast to the whole room as it happens.
+ *
+ * Carries no role information, which is what keeps it clear of the secrecy
+ * invariant: the imposter and the crew emit the identical payload shape, and
+ * nothing here says which tape is playing.
+ *
+ * `playerId`/`playerName` identify the sender, but **the watch screen
+ * deliberately renders only the emoji** — see ReactionBar.tsx. They stay on
+ * the payload because this is the room's reaction feed rather than one
+ * component's props. The consequence for §5's stated side benefit (the
+ * imposter reacting at the wrong moments, since they are watching a
+ * different tape) is that the tell now rests on timing alone: you see a
+ * reaction land out of step with everyone else's, not whose it was.
+ */
+export interface GameReaction {
+  playerId: string;
+  playerName: string;
+  emoji: ReactionEmoji;
+  /** Server clock, not the client's — used only to key the animation. */
+  timestamp: number;
+  /** Distinguishes two reactions sent in the same millisecond. */
+  id: string;
 }
 
 /** Ready Check progress while the video phase winds down (section 6). */

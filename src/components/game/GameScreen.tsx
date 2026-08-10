@@ -17,6 +17,7 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import type { GameAssignment, ReadyState } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
 import { VideoPlayer, VideoPlayerHandle } from './VideoPlayer';
+import { ReactionBar } from './ReactionBar';
 import { getSocket } from '@/lib/socket';
 import { useShop } from '@/hooks/useShop';
 import { tapeSkinStyles, equippedSticker } from '@/lib/cosmetics';
@@ -145,7 +146,9 @@ export function GameScreen({
         <div className="absolute inset-0">
           <VideoPlayer
             ref={playerRef}
-            url={assignment.videoUrl}
+            // Only ever mounted on a video round — the room page routes a
+            // prompt assignment to PromptScreen instead.
+            url={assignment.videoUrl ?? ''}
             onReady={handleVideoReady}
             onEnded={handleVideoEnded}
           />
@@ -249,6 +252,12 @@ export function GameScreen({
           </button>
         </div>
       )}
+
+      {/* Live reactions (section 5). Playback only: before it there is
+          nothing to react to, and once your tape runs out the Ready Check
+          modal owns the screen. Mounting it with playback also means the
+          float list starts empty every round without needing to be cleared. */}
+      {playState === 'playing' && <ReactionBar code={code} actions={actions} />}
 
       {playState === 'playing' && (
         <div className="scan-line pointer-events-none" style={{ zIndex: 5 }} />
