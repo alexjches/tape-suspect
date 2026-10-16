@@ -15,6 +15,13 @@
 
 import type { Player } from './gameState';
 import { REACTION_EMOJI, type ReactionEmoji } from '../types';
+import { CHARACTERS } from '../lib/avatars';
+import {
+  FINGERPRINT_BANDS,
+  FINGERPRINT_FRAMES,
+  FINGERPRINT_LENGTH,
+  normaliseFrames,
+} from '../lib/audioFingerprint';
 
 /**
  * Master switch. Bots let one person fill and start a lobby, so on a public
@@ -43,9 +50,14 @@ const BOT_NAMES = [
   'HUGO', 'WANDA', 'CLIVE', 'NADIA',
 ];
 
-/** Roster ids from src/lib/avatars.ts — kept short of the full cast so a
-    human picking a face is unlikely to collide with a bot's. */
-const BOT_AVATARS = ['c03', 'c05', 'c09', 'c04', 'c11', 'c06', 'c02', 'c10', 'c07'];
+/** Faces for the fill, walked in order so a 4-bot lobby is reproducible.
+ *
+ *  Derived from the roster rather than listed, because a hand-written list of
+ *  ids goes stale silently: an id that no longer exists still renders, it just
+ *  hashes to some other character. This used to hold a hand-picked subset so a
+ *  human was unlikely to collide with a bot's face — with a cast this small
+ *  there is no subset to pick, and the SIM badge is what tells them apart. */
+const BOT_AVATARS = CHARACTERS.map((c) => c.id);
 
 /**
  * Plausible one-word descriptions. The point is not that a bot plays well —
@@ -131,6 +143,67 @@ export const botSpeakDelay = () => rand(1200, 3500);
 
 /** How long a bot deliberates before voting. */
 export const botVoteDelay = () => rand(3000, 9000);
+
+/**
+ * A simulated take, for Choicer Voicer.
+ *
+ * A bot has no microphone, so what it cannot do is *record*. What it can do is
+ * hand over a fingerprint of the right shape — and that matters, because it
+ * means the bot's score is **computed by the same `similarity()` the player's
+ * is** rather than fabricated as a percentage. That is the difference between a
+ * bot filling the round being tested and a bot filling a different one.
+ *
+ * The first version returned a random 30–80% instead, and it failed the case
+ * bots exist for. On a line with no reference recording, every take is scored
+ * against the average of the *others'* fingerprints — so a lone human among
+ * bots with no fingerprints had nothing to be compared with and scored 0%,
+ * which reads as the mode being broken rather than as the tester being alone.
+ *
+ * Two shapes, because a bot has to be plausible against whichever it is up
+ * against:
+ *
+ *   with a reference  the reference itself, roughened. `spread` decides how
+ *                     badly — the caller varies it, so a table of bots is not
+ *                     six identical scores.
+ *   without           a smooth random contour: a few low-frequency waves per
+ *                     band, which is what a voice actually looks like here
+ *                     (see the per-band mean subtraction in fingerprint()).
+ *                     White noise would be wrong — it scores ~0 against
+ *                     everything, which is the bug this replaces.
+ */
+export function botFingerprint(reference: number[] | null): number[] {
+  const grid = new Array<number>(FINGERPRINT_LENGTH).fill(0);
+
+  if (reference && reference.length === FINGERPRINT_LENGTH) {
+    // 0.25–0.9 puts the resulting match roughly between 40% and 85% — inside
+    // what a real take reaches, and short of the near-perfect scores a good
+    // impression earns, so bots never crowd the human off their own board.
+    const spread = 0.25 + Math.random() * 0.65;
+    for (let i = 0; i < FINGERPRINT_LENGTH; i++) {
+      grid[i] = reference[i] + (Math.random() * 2 - 1) * spread;
+    }
+    return normaliseFrames(grid);
+  }
+
+  // Three slow waves per band, at a phase and rate drawn per band. Slow is the
+  // point: a fingerprint's frames are a contour over time, so neighbouring
+  // frames in a real take are strongly related and the average of several bots
+  // is something a human take can genuinely be close to or far from.
+  for (let b = 0; b < FINGERPRINT_BANDS; b++) {
+    const waves = [0, 1, 2].map(() => ({
+      rate: 0.4 + Math.random() * 1.6,
+      phase: Math.random() * Math.PI * 2,
+      gain: Math.random(),
+    }));
+    for (let f = 0; f < FINGERPRINT_FRAMES; f++) {
+      const p = f / FINGERPRINT_FRAMES;
+      let v = 0;
+      for (const w of waves) v += w.gain * Math.sin(2 * Math.PI * w.rate * p + w.phase);
+      grid[f * FINGERPRINT_BANDS + b] = v;
+    }
+  }
+  return normaliseFrames(grid);
+}
 
 export function botWord(): string {
   return BOT_WORDS[Math.floor(Math.random() * BOT_WORDS.length)];

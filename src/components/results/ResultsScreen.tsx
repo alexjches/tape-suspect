@@ -431,9 +431,13 @@ export function ResultsScreen({ results, playerId, actions, code }: Props) {
               className="brutal-title"
               style={{ fontSize: '1.5rem', color: '#000', textShadow: 'none', marginBottom: 6 }}
             >
-              {results.bluffReveal ? '📖' : '🎯'}{' '}
+              {results.bluffReveal ? '📖' : results.voiceLine ? '🎙️' : '🎯'}{' '}
               {results.scores[0]?.name?.toUpperCase() ?? 'NOBODY'}
-              {results.bluffReveal ? ' PLAYED IT BEST' : ' READ THE ROOM'}
+              {results.bluffReveal
+                ? ' PLAYED IT BEST'
+                : results.voiceLine
+                  ? ' NAILED IT'
+                  : ' READ THE ROOM'}
             </h3>
             <p style={{ fontWeight: 600 }}>
               {results.scores[0]?.points ?? 0} point
@@ -468,6 +472,28 @@ export function ResultsScreen({ results, playerId, actions, code }: Props) {
         {/* ── A scored round has no reveal, it has a table ─────────
             Gated on `kind` rather than on a mode id: a second scoring mode
             must not have to be added to a list of string comparisons. */}
+        {/* ── Choicer Voicer: what everyone was performing ─────────
+            The line was public all round, so this is a heading rather than a
+            reveal. What it does add is the honest footnote about what the
+            percentages were measured against — a score against the original
+            recording and a score against the room's average are different
+            claims, and a table that does not say which is misleading. */}
+        {showWinner && results.voiceLine && (
+          <div className="voice-reveal">
+            <div className="voice-reveal-quote">
+              &ldquo;{results.voiceLine.quote}&rdquo;
+            </div>
+            {results.voiceLine.source && (
+              <div className="voice-reveal-source">{results.voiceLine.source}</div>
+            )}
+            <div className="voice-reveal-note">
+              {results.voiceLine.scoredAgainstOriginal
+                ? 'SCORED AGAINST THE ORIGINAL RECORDING'
+                : 'NO REFERENCE ON FILE — SCORED AGAINST THE ROOM'}
+            </div>
+          </div>
+        )}
+
         {showWinner && results.kind === 'score' && results.scores && (
           <div className="wl-results">
             {results.spectrum && (

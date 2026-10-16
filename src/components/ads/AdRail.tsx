@@ -14,6 +14,7 @@
 // margin beside that route's content box. See globals.css.
 
 import { useEffect, useRef } from 'react';
+import { useConsent } from '@/lib/cookieConsent';
 
 /** Publisher id, e.g. `ca-pub-1234567890123456`. Unset ⇒ no live ads. */
 const CLIENT = process.env.NEXT_PUBLIC_ADSENSE_CLIENT;
@@ -31,7 +32,14 @@ declare global {
 
 export function AdRail({ side }: { side: 'left' | 'right' }) {
   const slot = SLOTS[side];
-  const live = Boolean(CLIENT && slot);
+  // Consent is the third condition, alongside a publisher id and a slot. The
+  // gate that actually matters is on the loader (AdScript) — this one is what
+  // stops a declined player being left with an empty 160px column where the
+  // unit would have been. It flips live without a reload: `useConsent` is
+  // event-backed, so pressing ACCEPT ALL mounts the <ins> and the effect below
+  // pushes it in the same beat the script arrives.
+  const { consent } = useConsent();
+  const live = Boolean(CLIENT && slot && consent === 'all');
   const ins = useRef<HTMLModElement>(null);
   // React Strict Mode double-invokes effects in development, and AdSense
   // throws ("All ins elements in the DOM with class=adsbygoogle already have
@@ -53,10 +61,14 @@ export function AdRail({ side }: { side: 'left' | 'right' }) {
     }
   }, [live]);
 
-  // No publisher id configured. In development that is the normal state, and a
-  // labelled placeholder is what makes the reserved space visible while you
-  // lay a screen out; in production it would be an empty dashed box on a live
-  // page, which is worse than no rail at all.
+  // No publisher id — or no consent. In development the first is the normal
+  // state, and a labelled placeholder is what makes the reserved space visible
+  // while you lay a screen out; in production it would be an empty dashed box
+  // on a live page, which is worse than no rail at all.
+  //
+  // Note the placeholder deliberately ignores consent: it is a layout aid and
+  // loads nothing, so hiding it would only take the gutter away from whoever is
+  // measuring it. To see the real gate in dev, set a publisher id.
   if (!live) {
     if (process.env.NODE_ENV === 'production') return null;
     return (

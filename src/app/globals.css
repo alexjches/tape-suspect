@@ -1382,6 +1382,141 @@ body {
     -1px 1px 0 #fff, 0 1px 0 #fff, 1px 1px 0 #fff;
 }
 
+/* ── The mode card's hover face ────────────────────────────────────────
+   Hovering a tile turns it over: the icon and the label go, the name comes
+   back as a header pinned to the top, and the blurb rises into the space
+   the icon has just left. It replaces the native `title` tooltip that used
+   to carry the same sentence — a tooltip appears late, somewhere near the
+   pointer, and covers the neighbouring cards.
+
+   Two structural notes. The overlay is `position: absolute` over the whole
+   card rather than a third flex child, because a ~234×130 tile has no room
+   for the icon and three lines of prose at once; and the icon/label fade
+   out under it, so the overlay needs no fill of its own and therefore no
+   light-mode rule (the card keeps its dark fill in both themes).
+
+   The rise is clipped by `overflow: hidden` on the card, which is what
+   makes the text read as coming *from the bottom edge* rather than merely
+   drifting up. The active ring is a box-shadow, so it is not clipped by it.
+   ------------------------------------------------------------------- */
+.mode-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.mode-card-icon,
+.mode-card-name {
+  /* Faster than the blurb's rise, so the face is gone before the prose is
+     on top of it rather than the two crossing mid-card. Every duration in
+     this hover is one scale — raising the rise means raising these with it,
+     or the icon is still fading while the sentence arrives. */
+  transition: opacity 0.14s ease;
+}
+
+.mode-card-blurb {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Heading and description are one block, centred in the card, with a real
+     10px between them. Neither child stretches: when they each took half the
+     card and centred inside it, the space between them was whatever the
+     description's line count left over — 5px of band gap, but 20px of visible
+     air under a one-line blurb. */
+  justify-content: center;
+  gap: 10px;
+  padding: 9px 10px;
+  /* Never a hit target: the button underneath owns the click, and a child
+     that swallows pointer events would drop the hover the moment the text
+     appeared under the cursor, which flickers. */
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.17s ease;
+}
+
+/* The name, promoted to a header. Same ink and same halo as
+   `.mode-card-name` on purpose — it is the same label, moved, not a second
+   piece of type — but a size down, since it is now a caption over prose
+   rather than the card's whole identity. */
+.mode-card-blurb-title {
+  /* Natural height, so the parent's `justify-content: center` centres the
+     pair as a block. Anything that stretches this — the `flex: 1` it used to
+     carry — turns the parent's `gap` into a gap between *bands* rather than
+     between the two pieces of type, which is not what it looks like. */
+  flex: 0 0 auto;
+  display: block;
+  width: 100%;
+  font-family: var(--font-brutal);
+  /* Tracks the blurb text below it: the header has to stay the larger of the
+     two, or it stops reading as a header. The pair is scaled off `3.png`,
+     which sets its heading about 1.2× its body. */
+  font-size: 1rem;
+  letter-spacing: 0.6px;
+  line-height: 1.1;
+  text-align: center;
+  color: #2f0968;
+  text-shadow:
+    -1px -1px 0 #fff, 0 -1px 0 #fff, 1px -1px 0 #fff,
+    -1px 0 0 #fff, 1px 0 0 #fff,
+    -1px 1px 0 #fff, 0 1px 0 #fff, 1px 1px 0 #fff;
+}
+
+.mode-card-blurb-text {
+  flex: 0 0 auto;
+  display: block;
+  width: 100%;
+  /* Sized off `3.png`: the blurb there is ~15px on a 243px-wide card and
+     fills it, where 0.62rem read as fine print floating in the middle. The
+     longest description in the roster (Questions, 65 characters) is what
+     caps this — at 0.84rem it wraps to three lines (51px), and heading plus
+     gap plus three lines is ~79px inside a ~108px content box. A fourth line
+     still fits; a fifth is where the block starts to clip. Three is the worst
+     case measured down to a 1150px viewport. Measure before raising it
+     further — the overflow would be silent, since the card clips. */
+  font-size: 0.84rem;
+  line-height: 1.3;
+  letter-spacing: 0.2px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.92);
+  /* The travel. 18px against a ~36px text area is enough to read as a rise
+     without the sentence starting off-card and arriving late. */
+  transform: translateY(18px);
+  opacity: 0;
+  transition: transform 0.34s cubic-bezier(0.2, 0.9, 0.25, 1.05) 0.06s,
+    opacity 0.28s ease 0.06s;
+}
+
+/* Gated on a real pointer: a touch device has no hover, and without this the
+   overlay latches on after a tap and sits over the card until something else
+   is tapped. `:disabled` is deliberately *not* excluded — a non-host cannot
+   press the card but still has to be able to read what the lobby is playing,
+   and the blurb is information rather than an affordance. */
+@media (hover: hover) and (pointer: fine) {
+  .mode-card:hover .mode-card-icon,
+  .mode-card:hover .mode-card-name {
+    opacity: 0;
+  }
+
+  .mode-card:hover .mode-card-blurb {
+    opacity: 1;
+  }
+
+  .mode-card:hover .mode-card-blurb-text {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Reduced motion keeps the swap and drops the travel — the card still turns
+   over, the prose just fades in where it lands. */
+@media (prefers-reduced-motion: reduce) {
+  .mode-card-blurb-text {
+    transform: none;
+    transition: opacity 0.28s ease;
+  }
+}
+
 /* ── Prompt round: the card you are dealt ──────────────────────────────
    The watch phase for the Words and Questions modes. Deliberately one card
    centred on the panel with nothing else on screen: it is the only thing
@@ -1668,11 +1803,20 @@ body {
    the thing you read it for is the thing you press. */
 .lobby-invite-code {
   font-family: var(--font-ui);
-  font-weight: 600;
+  /* 900, the same cut and for the same reason as `.router-code-input`: six
+     characters transcribed off somebody else's screen, where the weight is what
+     tells B from 8 and O from 0. That cut is loaded by the <link> in
+     layout.tsx, NOT by vhs.css's @import (which stops at 800) — this class is
+     now the second thing depending on it, so removing that link silently drops
+     both back to 800 rather than failing. See the note in layout.tsx for why
+     `document.fonts.check()` will not catch it. */
+  font-weight: 900;
   font-size: 1.1rem;
   /* Its own tracking, not the 0.5px the name fields use — this is a code read
-     character by character, and the wide set is what makes it one. */
-  letter-spacing: 3px;
+     character by character, and the wide set is what makes it one. 2px rather
+     than 3: at 900 the glyphs carry more of that separation themselves, and the
+     wider set left the chip reading as spaced-out rather than as one code. */
+  letter-spacing: 2px;
   padding: 2px 8px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.28);
@@ -2448,11 +2592,13 @@ body {
 
 /* ── Roster characters ───────────────────────────────────────────────
    The illustrated characters in public/avatars are self-contained badges:
-   each one draws its own coloured circle, and hats, ears and antennae
-   deliberately break out above it. vhs.css's avatar slots were built to
-   frame a bare emoji, so they supply a white disc, a black ring and a
-   circular mask — all three now fight the art, cropping exactly the
-   silhouette that gives each character its identity.
+   each one paints its own coloured circle, and hair, headband tails and
+   speed lines deliberately break out past it. vhs.css's avatar slots were
+   built to frame a bare emoji, so they supply a white disc, a black ring
+   and a circular mask — all three fight the art, cropping exactly the
+   silhouette that gives each character its identity. (Re-check this if the
+   art ever stops overhanging: a badge that fits inside its circle would be
+   fine in the slot, but none of the cast does.)
 
    `.character-slot` keeps the slot's position and size and drops the
    framing. It is a modifier rather than an override of the base classes
@@ -2470,7 +2616,7 @@ body {
 /* Size is set by <Avatar size>, as an inline height. Do NOT try to size the
    image from here: an inline style outranks any selector, so a rule like
    ".character-slot img { height: 100% }" looks right and silently does
-   nothing. Width is left auto so the 262×299 art is never stretched square. */
+   nothing. Width is left auto, which the square art satisfies anyway. */
 
 /* The signup / guest-gate preview is a plain stage for the artwork now, so it
    no longer needs the disc's fixed square. Width tracks the art. */
@@ -3015,6 +3161,604 @@ body {
   .bluff-word { font-size: 1.6rem; }
   .bluff-reveal-row { grid-template-columns: minmax(0, 1fr) auto; }
   .bluff-reveal-author { grid-column: 1 / -1; }
+}
+
+/* ── Choicer Voicer ───────────────────────────────────────────────────
+   Line and recorder left, live scoreboard right — the same two-column shape
+   as Fake Artist, and grid-areas for the same reason: the phone breakpoint
+   has to put the board *above* the recorder without the markup nesting one
+   inside the other.
+
+   Nothing here is per-player secret. Everyone sees the same line and the same
+   scores as they land, so unlike the Wavelength scale there is no rule about
+   what may or may not be rendered — only the recorder is gated, and only on
+   whose turn it is. */
+/* ── Laid out from `gui.png` ──
+   Screen in the middle with the soundwave under it, a column of keys down the
+   right, the score board beneath them. The reference is Choicer Voicer's own
+   Dub Mode and the arrangement is the whole of what it teaches: the media is
+   one block you look at, and every control is in one place you reach for. */
+.voice-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 210px;
+  /* Five named areas rather than two nested columns, and that is what lets the
+     phone breakpoint put the controls *above* the media. `.voice-clip-stage`
+     and `.voice-waves` are grid children for this reason alone — inside
+     `.voice-main` their order was fixed, and at 390x780 the whole control
+     column ended up below the fold behind a picture nobody had asked for yet. */
+  grid-template-areas:
+    "main  controls"
+    "stage controls"
+    "waves board";
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: start;
+  gap: 16px;
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.voice-main { grid-area: main; min-width: 0; }
+.voice-controls { grid-area: controls; }
+.voice-board { grid-area: board; }
+/* Both are placed by the grid, so `margin: auto` is what centres them in a
+   column wider than they are — see their own rules for the width caps.
+
+   `align-self: start` is not optional on the soundwave: its row is the
+   `minmax(0, 1fr)` one that lets the board take the remaining height, and a
+   grid item defaults to stretching to fill its cell. Measured, that grew a
+   129px box to 196px and pushed it 50px off a 720px screen — with the canvas
+   inside still 92px, so the extra was pure empty panel. */
+.voice-clip-stage { grid-area: stage; align-self: start; }
+.voice-waves { grid-area: waves; align-self: start; }
+
+/* ── The control stack ──
+   Full-width keys in one column, in the reference's order: hear it again,
+   record/stop, watch, retake, save — then RESET MIC set apart below a rule.
+   All of them are always rendered; the unavailable ones are disabled, which is
+   what lets a player see the shape of a turn before it starts. */
+.voice-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-content: start;
+}
+
+.voice-progress {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.66rem;
+  letter-spacing: 1.4px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.72);
+  padding-bottom: 2px;
+}
+
+/* `.btn-brutal` is a pill sized by its own padding; these have to be one
+   column of identical keys instead, so width, margin and text size are all
+   overridden. The colour classes still supply fill and shadow. */
+.voice-ctl.btn-brutal {
+  width: 100%;
+  margin: 0;
+  padding: 9px 8px;
+  font-size: 0.72rem;
+  letter-spacing: 0.6px;
+  text-align: center;
+}
+
+/* Disabled reads as *unavailable now*, not as broken: the key keeps its shape
+   and its label and loses its contrast, which is how the reference greys the
+   controls that do not apply to the current beat. */
+.voice-ctl.btn-brutal:disabled {
+  /* Greyed as well as faded. Opacity alone left a disabled magenta key brighter
+     than a live dark one, which inverts the thing the state is meant to say. */
+  opacity: 0.38;
+  filter: grayscale(0.7);
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* The live one. A cyan ring rather than a different fill, for the same reason
+   `.mode-card.active` is a ring: it marks the key without turning it into a
+   different kind of object. */
+.voice-ctl.btn-brutal.active {
+  box-shadow:
+    0 0 0 3px var(--neon-cyan),
+    0 4px 0 rgba(0, 0, 0, 0.45);
+}
+
+.voice-ctl.btn-brutal.subtle {
+  font-size: 0.64rem;
+  opacity: 0.85;
+}
+
+.voice-controls-sep {
+  height: 1px;
+  margin: 6px 2px 2px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* The browser's own answer, printed. "The button does nothing" and "this
+   browser has the site on Block and will never prompt again" are the same
+   screen without it. */
+.voice-mic-state {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.56rem;
+  letter-spacing: 1.4px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.voice-mic-state.ok { color: var(--neon-green); }
+
+.voice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.voice-title { font-size: 1.6rem; margin: 0; }
+
+/* Who is up — the clock that used to ride here is in `.voice-progress` at the
+   top of the control column, which is where the keys it applies to are. This
+   says only whose turn it is, so it stays a caption rather than a countdown. */
+.voice-whos-up {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 1.6px;
+  color: rgba(255, 255, 255, 0.62);
+  white-space: nowrap;
+}
+
+/* The line keeps its own dark fill in both themes, like .draw-card and
+   .bluff-word-card: it is the thing being read aloud, and it wants to be the
+   brightest text on the screen against a constant ground. */
+.voice-line-card {
+  border: 4px solid #000;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.45);
+  background: #1b1033;
+  padding: 20px 16px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.voice-line-label {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.66rem;
+  letter-spacing: 2px;
+  color: var(--neon-cyan);
+}
+
+.voice-line-quote {
+  font-family: var(--font-display, var(--font-ui));
+  font-size: 1.9rem;
+  line-height: 1.15;
+  color: #fff;
+  word-break: break-word;
+}
+
+.voice-line-source {
+  font-family: var(--font-ui);
+  font-size: 0.7rem;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* ── The soundwaves ──
+   One box, both series drawn over each other. They used to be two stacked bars
+   and the comparison had to be carried across the gap between them; superimposed
+   with an additive blend, agreement is just brightness. Nothing here may make
+   the two series differ in geometry — same column count, same mirror line, same
+   height — or the overlay stops meaning anything. */
+.voice-waves {
+  margin-top: 14px;
+  /* Centred and capped under the picture, as the reference frames it — a bar
+     running the full width of a wide column stops reading as an instrument and
+     starts reading as a divider. */
+  max-width: 620px;
+  margin-inline: auto;
+}
+
+.waveform {
+  position: relative;
+  border: 3px solid #000;
+  border-radius: 10px;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.45);
+  /* Keeps its own dark fill in both themes, like .draw-card: the bars are
+     saturated neon and the dark ground is what they read against. */
+  background: #140c24;
+  padding: 6px 8px;
+  overflow: hidden;
+}
+
+/* The bar's height lives here, not on the component: an inline height beats
+   every selector, and the MOBILE block below has to be able to shrink these. */
+.waveform-canvas {
+  display: block;
+  width: 100%;
+  /* Taller than the 60px each bar had when there were two of them, and still
+     ~50px shorter overall: one box, one border, one legend. The extra height is
+     what makes a near-match and an exact match visibly different — at 60px the
+     overlap was bright either way. */
+  height: 92px;
+}
+
+/* ── The legend ──
+   The two series are in one box now, so a caption *over* the bars would have to
+   name both and would sit on the thing it is describing. It goes underneath
+   instead, as a swatch per series — which is also the only place the colour
+   coding is stated, since the canvas is aria-hidden and 192 numbers tell a
+   screen reader nothing. It wraps, because "YOUR TAKE — NOT RECORDED YET" and a
+   phone are not compatible on one line. */
+.waveform-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 14px;
+  margin-top: 5px;
+}
+
+.waveform-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.58rem;
+  letter-spacing: 1.5px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+/* Dimmed together with its bar: a full-strength key beside an 18%-alpha
+   waveform reads as the bar having failed to draw rather than as "nothing has
+   been recorded yet". */
+.waveform-key.muted {
+  color: rgba(255, 255, 255, 0.34);
+}
+
+.waveform-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  /* No border: these are the literal ink values from WAVE_INK, and a black rim
+     at 10px eats most of the colour it is supposed to be showing. */
+  flex: 0 0 auto;
+}
+
+.waveform-key.muted .waveform-swatch {
+  opacity: 0.4;
+}
+
+/* ── The picture ──
+   Big and centred under the line, as `gui.png` has it.
+
+   **Sized by HEIGHT, not width.** At 16:9 across an 840px column this is 470px
+   tall and everything below it falls off a 720px screen; capping the height and
+   letting `aspect-ratio` derive the width is what keeps the whole turn on one
+   screen. `min(34vh, 320px)` was measured, not guessed. */
+.voice-clip-stage {
+  height: min(30vh, 300px);
+  width: auto;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  margin: 14px auto 0;
+  border: 3px solid #000;
+  border-radius: 10px;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.45);
+  background: #000;
+  overflow: hidden;
+}
+
+/* The IFrame API replaces the div inside this with an iframe of its own, so the
+   sizing has to be reachable from here rather than set on the element passed in
+   — same trap as #yt-player in vhs.css, and the reason that rule keys on an id.
+   This one keys on the class and its descendant, so the two players cannot
+   fight over one selector. */
+.voice-clip-frame,
+.voice-clip-frame iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+}
+
+/* ── The unblock instructions ──
+   Shown when the browser has a remembered refusal on file, which is the one
+   microphone failure no button can undo: getUserMedia rejects without ever
+   prompting, so the only route back is the address bar. Numbered steps rather
+   than a sentence, because this is a procedure somebody carries out in another
+   part of the browser chrome while reading it. */
+.voice-unblock {
+  width: 100%;
+  max-width: 460px;
+  text-align: left;
+  border: 2px solid rgba(255, 95, 130, 0.5);
+  border-radius: 8px;
+  background: rgba(255, 40, 90, 0.09);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.voice-unblock-title {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.62rem;
+  letter-spacing: 1.4px;
+  color: #ff8fb0;
+}
+
+.voice-unblock-steps {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  list-style: decimal;
+  font-family: var(--font-ui);
+  font-size: 0.76rem;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.voice-unblock-steps strong { color: #fff; }
+
+.voice-unblock-note {
+  font-family: var(--font-ui);
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.voice-stage {
+  margin-top: 14px;
+  border: 4px solid #000;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.45);
+  background: rgba(20, 12, 36, 0.92);
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  /* 168px when this panel held the buttons; it holds one line of prose now that
+     they are in the column, and the reserve was a third of the main screen left
+     empty. Still a floor rather than nothing, so a one-word status and a
+     two-line one do not move the picture above them. */
+  min-height: 72px;
+  justify-content: center;
+}
+
+.voice-stage .btn-brutal { margin: 0; }
+
+/* The level meter is the whole of the feedback that recording is happening —
+   there is no waveform and no playback, by design. It has to be unmistakable,
+   which is why the fill goes green only while live. */
+.voice-meter {
+  width: 100%;
+  max-width: 420px;
+  height: 14px;
+  border: 3px solid #000;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.voice-meter-fill {
+  height: 100%;
+  width: 0;
+  background: rgba(255, 255, 255, 0.25);
+  /* Fast enough to read as a level rather than as an animation. */
+  transition: width 80ms linear;
+}
+
+.voice-meter-fill.live { background: var(--neon-green); }
+
+
+.voice-mic-icon {
+  font-size: 2.4rem;
+  line-height: 1;
+  font-family: var(--font-emoji, inherit);
+}
+
+/* Hear it back / retake / commit. Wraps rather than shrinking: three buttons
+   crushed onto one line at 380px is how you press RETAKE meaning to press USE. */
+.voice-review-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.voice-review-row .btn-brutal {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.voice-instruction {
+  margin: 0;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+  max-width: 460px;
+}
+
+.voice-instruction.warn { color: var(--neon-yellow, #ffd93d); }
+
+.voice-board {
+  border: 4px solid #000;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.45);
+  background: rgba(20, 12, 36, 0.92);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-content: start;
+}
+
+.voice-board-title {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.66rem;
+  letter-spacing: 2px;
+  color: var(--neon-cyan);
+}
+
+.voice-board-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.voice-board-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+  border: 3px solid #000;
+  border-radius: 10px;
+  background: rgba(35, 22, 58, 0.95);
+}
+
+.voice-board-row.active { outline: 2px solid var(--neon-magenta); }
+.voice-board-row.leading { outline: 2px solid var(--neon-green); }
+
+.voice-board-face { flex-shrink: 0; line-height: 0; }
+
+.voice-board-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 0.76rem;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.voice-board-score {
+  font-family: var(--font-brutal);
+  font-size: 0.95rem;
+  color: var(--neon-magenta);
+  flex-shrink: 0;
+}
+
+/* ── Short screens ──
+   A laptop at 1366x768 has about 646px of usable height once the CRT header is
+   off it, and this screen stacks four blocks into that: the line, the status,
+   the picture and the soundwave. Measured at 1280x720, the four together come
+   to 720 unless the two that are only *reading* — the line and the status —
+   give up their padding. Keyed on height rather than width because that is the
+   axis that runs out; the MOBILE block below is a separate problem. */
+@media (max-height: 800px) {
+  .voice-line-card { padding: 12px 16px; }
+  .voice-line-quote { font-size: 1.5rem; }
+  .voice-stage { min-height: 0; padding: 10px 14px; }
+  .voice-head { margin-bottom: 8px; }
+  .voice-title { font-size: 1.35rem; }
+  .voice-waves { margin-top: 10px; }
+  .voice-clip-stage { margin-top: 10px; }
+}
+
+.voice-board-note {
+  font-size: 0.66rem;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* The results heading. Not a reveal — the line was public all round — but the
+   footnote under it is load-bearing: a percentage against the original
+   recording and a percentage against the room's average are different claims. */
+.voice-reveal {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+}
+
+.voice-reveal-quote {
+  font-family: var(--font-display, var(--font-ui));
+  font-size: 1.4rem;
+  color: #fff;
+  word-break: break-word;
+}
+
+.voice-reveal-source {
+  font-family: var(--font-ui);
+  font-size: 0.72rem;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.voice-reveal-note {
+  font-family: var(--font-ui);
+  font-size: 0.62rem;
+  letter-spacing: 1.5px;
+  color: var(--neon-cyan);
+}
+
+@media (max-width: 900px) {
+  /* Board above the recorder: on a phone the scores are what people are
+     watching between turns, and the meter is only relevant on your own go. */
+  .voice-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    /* **The keys come before the media here, and that is the whole reason the
+       picture and the soundwave are grid children.** The reference puts the
+       controls beside the screen; stacked, "beside" has to become "before" —
+       measured at 390x780 with the picture above them, all six keys were below
+       the fold behind a video the player had not asked to watch yet. Order is
+       therefore: what to say, what is going on, what to press, then the media,
+       then the board. */
+    grid-template-areas:
+      "main"
+      "controls"
+      "stage"
+      "waves"
+      "board";
+  }
+
+  /* Two columns of keys rather than one tall stack: six full-width buttons on a
+     phone is 300px of column before the board is even reached. */
+  .voice-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .voice-progress,
+  .voice-controls-sep,
+  .voice-mic-state { grid-column: 1 / -1; }
+
+  /* Capped so the picture cannot take the screen: 34vh of a 780px phone is
+     265px, and the keys under it have to stay in reach. */
+  .voice-clip-stage { height: min(26vh, 200px); }
+
+  .voice-title { font-size: 1.3rem; }
+  .voice-line-quote { font-size: 1.45rem; }
+  .voice-reveal-quote { font-size: 1.15rem; }
+  .voice-stage { min-height: 0; }
+
+  /* The bars keep their full width — they are the comparison, and shrinking
+     them is the last thing this screen should give up. What goes instead is
+     their height, and the review row stacks. */
+  .voice-review-row { width: 100%; }
+  .voice-review-row .btn-brutal { flex: 1 1 auto; }
+  .waveform-canvas { height: 68px; }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -4421,12 +5165,222 @@ body {
    *and* this app actually renders are listed — .sleeve-code,
    .video-placeholder-title and .font-handwritten have no markup in src/, the
    way the EDGE LANGUAGE block above lists only what is rendered. Tracking is
-   deliberately not set: .lobby-invite-code wants its own 3px and the rest are
-   fine at zero. */
+   deliberately not set: .lobby-invite-code wants its own 2px (and its own 900)
+   and the rest are fine at zero. */
 .tape-title,
 .reveal-value,
 .compact-label,
 .shop-item-name,
 .lobby-item-host {
   font-weight: 600;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   COOKIE CONSENT
+   ══════════════════════════════════════════════════════════════════════
+   A card of the same family as everything else on the field — dark fill, 4px
+   rim, a hard drop straight down — parked at the bottom of the viewport.
+
+   It is rendered from layout.tsx, so it is a sibling of #crt-viewport rather
+   than a child of it. Two things follow. The frame is `position: fixed` with
+   `z-index: 10`, so 1000 here is what puts the bar over it *and* over the
+   header profile menu's 500 — those numbers are in different stacking
+   contexts, but the bar has to clear both. And .crt-viewport's `overflow:
+   hidden` cannot clip the bar, which is why this can hang off the bottom edge
+   at all.
+
+   Centred with `left/right` plus `margin-inline: auto`, deliberately not
+   `left: 50%; transform: translateX(-50%)`: the entrance animates a transform,
+   and a centring transform would have to be repeated in every keyframe or the
+   bar would fly in from the left. Same trap the route-enter note above
+   describes from the other end.
+
+   `bottom` takes the larger of 16px and the home indicator inset — layout.tsx
+   sets `viewportFit: 'cover'`, so on a modern phone that inset is real and a
+   bar at a flat 16px sits under the gesture bar. */
+.cookie-banner {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  margin-inline: auto;
+  width: auto;
+  max-width: 760px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 16px 20px;
+  /* --panel rather than --bg-dark, and that is not a preference: ESSENTIAL
+     ONLY is a `.btn-brutal.dark`, which is filled with --bg-dark itself, so on
+     a --bg-dark bar the button would be its own border and nothing else. */
+  background: var(--panel);
+  border: 4px solid var(--border-color);
+  border-radius: 16px;
+  box-shadow: 0 6px 0 rgba(0, 0, 0, 0.45);
+  animation: cookie-rise 320ms cubic-bezier(0.2, 0.9, 0.25, 1.15) backwards;
+}
+
+/* `backwards`, never `both` — see the route-enter note above for why a
+   retained `transform: none` is not nothing. */
+@keyframes cookie-rise {
+  from {
+    opacity: 0;
+    transform: translateY(28px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.cookie-banner-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.cookie-banner-title {
+  font-family: var(--font-brutal);
+  font-size: 1rem;
+  letter-spacing: 1px;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+
+.cookie-banner-text {
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+
+/* Column, not a row: at the widths this bar actually gets, two brutal buttons
+   side by side either wrap mid-label or squeeze the copy to a ribbon. */
+.cookie-banner-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* .btn-brutal is sized for ROLL TAPE; this is a bar at the bottom of the
+   screen and must not out-shout the screen it is over. */
+.cookie-btn {
+  font-size: 0.8rem;
+  padding: 9px 16px;
+  white-space: nowrap;
+}
+
+/* ACCEPT ALL is the primary: the accent fill, the biggest label, and the drop
+   shadow the EDGE LANGUAGE block gives every filled key. It is also first in
+   the DOM, which is what puts it at the top of the stacked column and at the
+   left of the phone row. */
+.cookie-btn-primary {
+  font-size: 0.85rem;
+  padding: 11px 22px;
+}
+
+/* ESSENTIAL ONLY is the secondary, and the treatment is an *outline*, not a
+   dimming: full-strength ink on a transparent fill, so it is plainly a button
+   and plainly readable — the answer being nudged away from still has to be one
+   a player can find and press. It carries no `dark` class, so .btn-brutal
+   supplies neither fill nor shadow and there is nothing here overriding the
+   EDGE LANGUAGE block; the flat look is the absence of a fill, not a fight
+   with one.
+
+   The :hover and :active pairs restate what that block puts on .btn-brutal —
+   a lift and a 6px drop — because a shadow appearing under a key that has none
+   at rest reads as the button changing material under the pointer. Same
+   specificity (0,2,0), later in the file, so they land. */
+.cookie-btn-secondary {
+  background: transparent;
+  color: var(--ink-soft);
+  border-color: rgba(255, 255, 255, 0.32);
+  box-shadow: none;
+  font-size: 0.72rem;
+  padding: 8px 14px;
+}
+
+.cookie-btn-secondary:hover {
+  transform: none;
+  box-shadow: none;
+  color: var(--ink);
+  border-color: var(--ink-soft);
+}
+
+.cookie-btn-secondary:active {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+/* No close button and no header key: the bar is answered once and never shown
+   again, so there is nothing to back out of and no way back in. See the note at
+   the top of CookieConsent.tsx for what that costs and what putting it back
+   would take. */
+
+/* Light mode: the bar is a card, so it takes the white-card treatment, and it
+   stays solid rather than frosted for the reason the other white cards do — it
+   is the thing meant to sit *on* the field, not a pane of it. */
+:root[data-theme='light'] .cookie-banner {
+  background: linear-gradient(180deg, #ffffff 0%, #d4c4fc 100%);
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 6px 0 rgba(20, 4, 54, 0.28);
+}
+
+:root[data-theme='light'] .cookie-banner-title {
+  color: #2f0968;
+}
+
+:root[data-theme='light'] .cookie-banner-text {
+  color: #3f1b86;
+}
+
+/* The secondary's outline, in card ink. Deliberately not the deep #2f0968 the
+   `.dark` fill uses: filled with that colour on a pale card it was the highest
+   contrast thing in the bar, which is how the secondary ended up reading as the
+   primary. As an outline it can hold full-strength ink and still sit second. */
+:root[data-theme='light'] .cookie-btn-secondary {
+  color: #46209a;
+  border-color: rgba(47, 9, 104, 0.34);
+}
+
+/* 0,4,0 — has to beat the light rule above as well as the base :hover. */
+:root[data-theme='light'] .cookie-btn-secondary:hover {
+  color: #2f0968;
+  border-color: #2f0968;
+}
+
+/* Phone: the copy and the answers stack, and the buttons go full width. A
+   media query of its own rather than an entry in the MOBILE block above, for
+   the same reason the header block near it has one — these have to out-rank
+   the light-mode rules they follow, and a media query adds no specificity. */
+@media (max-width: 768px) {
+  .cookie-banner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    padding: 14px 16px;
+  }
+
+  /* Two across down here, since the row is now the full width of the bar and
+     a stacked pair would push the copy off a short screen. */
+  .cookie-banner-actions {
+    flex-direction: row;
+  }
+
+  /* The two keep their hierarchy down here, which means the sizes have to be
+     restated: this block sits later in the file than .cookie-btn-primary /
+     -secondary and matches at the same specificity, so a single `.cookie-btn`
+     rule would flatten both back to one size. The primary also takes the wider
+     share of the row rather than a bare `flex: 1` each. */
+  .cookie-btn-primary {
+    flex: 1.25;
+    font-size: 0.75rem;
+    padding: 11px 8px;
+  }
+
+  .cookie-btn-secondary {
+    flex: 1;
+    font-size: 0.68rem;
+    padding: 10px 8px;
+  }
 }

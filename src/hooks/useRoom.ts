@@ -19,6 +19,7 @@ import {
   GameWord,
   DrawStroke,
   BluffOption,
+  VoiceTake,
   ReadyState,
   TurnState,
   DeliberationState,
@@ -49,6 +50,18 @@ export interface RoomState {
     doneIn: number;
     total: number;
   } | null;
+  /**
+   * Choicer Voicer: every take so far, in the order they were performed. The
+   * live leaderboard, not a reconnect buffer — it is on screen for the whole
+   * phase, which is why `game:take` appends to it as each player finishes.
+   */
+  takes: VoiceTake[];
+  /**
+   * Choicer Voicer: the room is hearing the original together and nobody is up
+   * yet. Not inferable from a null `activePlayerId` — that is also what a
+   * finished phase looks like — so the server states it.
+   */
+  listening: boolean;
   deliberation: DeliberationState | null;
   secondsLeft: number | null;
   voteTally: VoteTally | null;
@@ -69,6 +82,8 @@ const initialState: RoomState = {
   strokes: [],
   spectrumState: null,
   bluffState: null,
+  takes: [],
+  listening: false,
   deliberation: null,
   secondsLeft: null,
   voteTally: null,
@@ -147,6 +162,48 @@ export function useRoom(code: string | null) {
     // Reconnect only — the canvas is the evidence and drawPhaseStart clears it.
     const handleStrokeHistory = (data: { strokes: DrawStroke[] }) => {
       setState((prev) => ({ ...prev, strokes: data.strokes }));
+    };
+
+    // Its own event for the reason drawPhaseStart is: a different screen, and
+    // the hook routes without knowing anything about modes.
+    const handleVoicePhaseStart = (data: RoomPublic & TurnState & { listening?: boolean }) => {
+      setState((prev) => ({
+        ...prev,
+        room: data,
+        phase: 'voicing',
+        takes: [],
+        listening: !!data.listening,
+        turnState: {
+          activePlayerId: data.activePlayerId,
+          turnTimeLeft: data.turnTimeLeft,
+          // Straight from the server rather than 0: the listen beat sits at -1,
+          // and hardcoding 0 would say player one is already up.
+          turnIndex: data.turnIndex ?? 0,
+          wordsUsed: {},
+        },
+      }));
+    };
+
+    // Only fires during the listen beat. The first `game:turnState` — which
+    // arrives when the beat ends and player one comes up — is what clears
+    // `listening` again, below.
+    const handleListenTick = (d: { secondsLeft: number }) => {
+      setState((prev) => ({
+        ...prev,
+        turnState: prev.turnState
+          ? { ...prev.turnState, turnTimeLeft: d.secondsLeft }
+          : prev.turnState,
+      }));
+    };
+
+    const handleTake = (take: VoiceTake) => {
+      setState((prev) => ({ ...prev, takes: [...prev.takes, take] }));
+    };
+
+    // Reconnect only — voicePhaseStart clears the board, and the takes are the
+    // whole of what is on screen.
+    const handleTakeHistory = (data: { takes: VoiceTake[] }) => {
+      setState((prev) => ({ ...prev, takes: data.takes }));
     };
 
     const handleCluePhaseStart = (data: RoomPublic & { secondsLeft: number }) => {
@@ -264,7 +321,10 @@ export function useRoom(code: string | null) {
     };
 
     const handleTurnState = (data: TurnState) => {
-      setState((prev) => ({ ...prev, turnState: data }));
+      // A turn state means somebody is up, which is the end of the listen beat.
+      // Clearing it here rather than on a dedicated event keeps the two from
+      // arriving out of order and leaving the screen on the wrong one.
+      setState((prev) => ({ ...prev, turnState: data, listening: false }));
     };
 
     const handleWord = (word: GameWord) => {
@@ -359,6 +419,10 @@ export function useRoom(code: string | null) {
     socket.on('game:writingTick', handleWritingTick);
     socket.on('game:bluffVoteStart', handleBluffVoteStart);
     socket.on('game:bluffVoteTick', handleBluffVoteTick);
+    socket.on('game:voicePhaseStart', handleVoicePhaseStart);
+    socket.on('game:listenTick', handleListenTick);
+    socket.on('game:take', handleTake);
+    socket.on('game:takeHistory', handleTakeHistory);
     socket.on('game:cluePhaseStart', handleCluePhaseStart);
     socket.on('game:clueTick', handleClueTick);
     socket.on('game:guessPhaseStart', handleGuessPhaseStart);
@@ -388,6 +452,10 @@ export function useRoom(code: string | null) {
       socket.off('game:writingTick', handleWritingTick);
       socket.off('game:bluffVoteStart', handleBluffVoteStart);
       socket.off('game:bluffVoteTick', handleBluffVoteTick);
+      socket.off('game:voicePhaseStart', handleVoicePhaseStart);
+      socket.off('game:listenTick', handleListenTick);
+      socket.off('game:take', handleTake);
+      socket.off('game:takeHistory', handleTakeHistory);
       socket.off('game:cluePhaseStart', handleCluePhaseStart);
       socket.off('game:clueTick', handleClueTick);
       socket.off('game:guessPhaseStart', handleGuessPhaseStart);
@@ -628,6 +696,19 @@ export function useRoom(code: string | null) {
     /** Wavelength: a guess, 0-100. */
     submitGuess: useCallback(
       (code: string, value: number) => socket.emit('game:guess', { code, value }),
+      [socket]
+    ),
+
+    /**
+     * Choicer Voicer: your performance, on your turn.
+     *
+     * What goes up is the **fingerprint**, not the recording — 384 numbers
+     * describing the frequency shape of the take, produced by
+     * `src/lib/audioFingerprint.ts`. The audio itself is captured, measured and
+     * dropped inside this browser and is never transmitted or stored anywhere.
+     */
+    submitTake: useCallback(
+      (code: string, fingerprint: number[]) => socket.emit('game:take', { code, fingerprint }),
       [socket]
     ),
 

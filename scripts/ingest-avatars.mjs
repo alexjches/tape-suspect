@@ -1,532 +1,433 @@
 #!/usr/bin/env node
 // scripts/ingest-avatars.mjs
 //
-// Takes SVGs from an image generator (Recraft, Illustrator, a vectorizer) and
-// turns them into roster artwork public/avatars/ can serve.
+// Takes raster portraits from an image generator and turns them into the
+// roster artwork public/avatars/ serves.
 //
-// Generated SVGs do not drop in as they are. Three things are always wrong:
+// A generated PNG does not drop in as it is. Three things are always wrong,
+// and all three are silent — the file renders, it just renders badly:
 //
-//   1. The canvas. Ours is 262.2 x 299 (portrait). A generator hands you a
-//      square. This is not cosmetic — Avatar.tsx sets an inline `height` and
-//      leaves `width: auto`, so a square file renders visibly wider than the
-//      rest of the cast, and .character-slot's positioning was tuned against
-//      the portrait canvas.
+//   1. It is opaque. The art is a badge on a white square, and every screen
+//      that draws an avatar draws it on the purple field or on a console. A
+//      white square behind a circular badge reads as a broken transparency,
+//      not as a portrait. The background is knocked out here, once, so the
+//      file is correct wherever it lands rather than needing a mask at each
+//      of the ~20 call sites.
 //
-//   2. Fills declared as CSS classes. Illustrator and most vector exporters
-//      emit `<style>.st0{fill:#E02D5C}</style>` and `class="st0"` on the art.
-//      Those class names are global to the *document*, so the moment two such
-//      files are inlined into one page they overwrite each other's colours.
-//      Our own avatars use inline fills and no <style> for exactly this reason.
-//      Flattening also drops a few hundred bytes per file.
+//   2. It is enormous. 1254x1254 RGB is ~1.2MB per character. The largest an
+//      avatar is ever drawn is 168px (the landing page preview), so the whole
+//      cast was going to cost several megabytes to say nothing at all.
 //
-//   3. Ink drift. A style-matched generation lands on #012B48 where the cast
-//      is #012442. Close enough to look like a mistake rather than a variant.
+//   3. Nothing names it. The ids in src/lib/avatars.ts have to match the files
+//      on disk exactly, and hand-syncing the two is how a stored avatar
+//      silently becomes a different character. The CHARACTERS array is printed
+//      at the end for pasting.
 //
-// It also emits the CHARACTERS array for src/lib/avatars.ts, because the ids
-// are positional against the files on disk and hand-syncing the two is exactly
-// the mistake that silently reassigns every stored avatar to a new character.
+// The knockout is a flood fill from the border rather than a colour test over
+// the whole image: the penguin's white belly, the dragon's teeth and every
+// eye highlight are the same white as the background and are only distinct
+// because they are *enclosed* by ink. A global "white becomes transparent"
+// pass punches holes through all of them.
 //
-// Zero dependencies, on purpose: this is a build-time art tool and should not
-// drag svgo or a headless browser into the repo to run once a month.
+// The mask is built at full resolution as a hard 1-bit mask and then averaged
+// down along with the colour, so the 4x downscale is what produces the
+// anti-aliased edge. Doing it the other way round — downscale, then threshold
+// — quantises the edge to whole pixels and the circle comes out visibly
+// polygonal at 320px.
+//
+// Colour is averaged over covered pixels *only*. Including the background in
+// the average pulls every edge pixel toward white and leaves a pale halo
+// around the badge that is invisible on a white page and obvious on ours.
+//
+// Zero dependencies, on purpose: sharp is a native binary and ImageMagick is
+// not on this machine, and neither is worth carrying for a tool that runs
+// when the art changes. zlib is in Node, and PNG is a documented format.
 //
 // Usage:
-//   node scripts/ingest-avatars.mjs --in <dir> [--dry-run]
-//   node scripts/ingest-avatars.mjs --in ./raw --force
-//   node scripts/ingest-avatars.mjs --in ./raw --start 12      # append to the cast
+//   node scripts/ingest-avatars.mjs --in ./profile-pictures [--dry-run]
+//   node scripts/ingest-avatars.mjs --in ./profile-pictures --force
+//   node scripts/ingest-avatars.mjs --in ./raw --size 320
 //
-// Order matters. Files are taken in natural filename order and that order
-// becomes c00, c01, c02… Prefix them numerically (`01-luchador.svg`) if you
-// care which is which; the mapping is printed before anything is written.
+// The id of each character is its filename, slugified — `penguin-pilot.png`
+// becomes `penguin-pilot`. Unlike the positional cNN scheme this replaced,
+// renaming a file cannot quietly reassign anyone else's character; it only
+// orphans its own, and an orphaned id resolves through characterFor().
 
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import process from 'node:process';
 
-// ── The house canvas, copied from the existing cast ──────────────────────────
-const TARGET_W = 262.2;
-const TARGET_H = 299;
-const DEFAULT_INK = '#012442';
-// RGB distance under which a colour is treated as "meant to be the ink".
-//
-// Deliberately tight. The job is to absorb *drift* — a generator landing on
-// #012B48 (distance ~8) instead of #012442 — not to collapse a designed navy
-// ramp. Measured against the reference set, a threshold of 60 also swallowed
-// #144060 (44) and #074966 (51), which are shading on the darker characters:
-// snapping those flattens the art and looks like a rendering fault. Raise it
-// with --ink-threshold if a batch genuinely drifts further; every colour that
-// moves is listed in the report, so this is checkable rather than a guess.
-const DEFAULT_INK_THRESHOLD = 20;
+// Every avatar is drawn at 168px or less (LandingHero's preview is the
+// largest). 320 covers that at ~2x for retina with room to spare; going to
+// 512 roughly triples the bytes to serve detail no screen asks for.
+const DEFAULT_SIZE = 320;
+
+// A pixel joins the background region if every channel is at least this
+// bright *and* it is connected to the border. Deliberately below 255: the
+// generator's white is 255 in the flat and a shade under it along the
+// anti-aliased rim, and leaving that rim opaque draws a white hairline
+// around the badge. Enclosed whites are unaffected — they are unreachable.
+const DEFAULT_WHITE = 236;
 
 // ── Args ─────────────────────────────────────────────────────────────────────
-function parseArgs(argv) {
-  const opts = {
-    in: null,
-    out: 'public/avatars',
-    ink: DEFAULT_INK,
-    inkThreshold: DEFAULT_INK_THRESHOLD,
-    scale: 1,
-    start: 0,
-    dryRun: false,
-    force: false,
-  };
-  for (let i = 0; i < argv.length; i += 1) {
-    const a = argv[i];
-    const next = () => argv[(i += 1)];
-    if (a === '--in') opts.in = next();
-    else if (a === '--out') opts.out = next();
-    else if (a === '--ink') opts.ink = next();
-    else if (a === '--ink-threshold') opts.inkThreshold = Number(next());
-    else if (a === '--scale') opts.scale = Number(next());
-    else if (a === '--start') opts.start = Number(next());
-    else if (a === '--dry-run') opts.dryRun = true;
-    else if (a === '--force') opts.force = true;
-    else if (a === '--help' || a === '-h') opts.help = true;
-    else {
-      console.error(`Unknown argument: ${a}`);
-      process.exit(1);
-    }
+const args = process.argv.slice(2);
+function flag(name) {
+  return args.includes(`--${name}`);
+}
+function opt(name, fallback) {
+  const i = args.indexOf(`--${name}`);
+  return i !== -1 && args[i + 1] ? args[i + 1] : fallback;
+}
+
+const inDir = opt('in', null);
+const outDir = path.resolve(opt('out', 'public/avatars'));
+const size = Number(opt('size', DEFAULT_SIZE));
+const white = Number(opt('white', DEFAULT_WHITE));
+const dryRun = flag('dry-run');
+const force = flag('force');
+
+if (!inDir) {
+  console.error('usage: node scripts/ingest-avatars.mjs --in <dir> [--out <dir>] [--size 320] [--force] [--dry-run]');
+  process.exit(1);
+}
+
+// ── PNG decode ───────────────────────────────────────────────────────────────
+// Only what a generator actually emits: 8-bit, non-interlaced, RGB or RGBA.
+// Anything else fails loudly rather than producing subtly wrong pixels.
+function decodePng(buf) {
+  const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+  for (let i = 0; i < 8; i += 1) {
+    if (buf[i] !== sig[i]) throw new Error('not a PNG');
   }
-  return opts;
-}
 
-// ── Colour ───────────────────────────────────────────────────────────────────
-function hexToRgb(hex) {
-  const h = hex.replace('#', '').trim();
-  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
-  if (full.length !== 6 || /[^0-9a-f]/i.test(full)) return null;
-  return [
-    parseInt(full.slice(0, 2), 16),
-    parseInt(full.slice(2, 4), 16),
-    parseInt(full.slice(4, 6), 16),
-  ];
-}
+  let pos = 8;
+  let header = null;
+  const idat = [];
 
-function rgbDistance(a, b) {
-  return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
-}
+  while (pos < buf.length) {
+    const len = buf.readUInt32BE(pos);
+    const type = buf.toString('ascii', pos + 4, pos + 8);
+    const body = buf.subarray(pos + 8, pos + 8 + len);
+    if (type === 'IHDR') {
+      header = {
+        width: body.readUInt32BE(0),
+        height: body.readUInt32BE(4),
+        depth: body[8],
+        colorType: body[9],
+        interlace: body[12],
+      };
+    } else if (type === 'IDAT') {
+      idat.push(body);
+    } else if (type === 'IEND') {
+      break;
+    }
+    pos += 12 + len; // length + type + data + crc
+  }
 
-/**
- * Snaps near-ink colours onto the house ink, and reports what moved.
- *
- * Deliberately only touches colours *close to* the target. An earlier instinct
- * was to snap the whole palette to a fixed list, which is wrong for this cast:
- * the reference set's fills range across purples, pinks, browns and teals, and
- * flattening that would make every character look like the same character. The
- * outline is the only colour the set genuinely shares.
- */
-function snapInk(svg, ink, threshold) {
-  const target = hexToRgb(ink);
-  if (!target) throw new Error(`--ink is not a hex colour: ${ink}`);
-  const moved = new Map();
+  if (!header) throw new Error('no IHDR');
+  if (header.depth !== 8) throw new Error(`unsupported bit depth ${header.depth} (need 8)`);
+  if (header.interlace !== 0) throw new Error('interlaced PNG is not supported');
+  if (header.colorType !== 2 && header.colorType !== 6) {
+    throw new Error(`unsupported colour type ${header.colorType} (need 2 or 6)`);
+  }
 
-  const out = svg.replace(/#([0-9a-f]{3}|[0-9a-f]{6})\b/gi, (match) => {
-    const rgb = hexToRgb(match);
-    if (!rgb) return match;
-    const d = rgbDistance(rgb, target);
-    if (d === 0 || d > threshold) return match;
-    moved.set(match.toLowerCase(), (moved.get(match.toLowerCase()) || 0) + 1);
-    return ink;
-  });
+  const { width, height } = header;
+  const channels = header.colorType === 6 ? 4 : 3;
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
 
-  return { svg: out, moved };
-}
-
-// ── <style> flattening ───────────────────────────────────────────────────────
-/**
- * Turns `<style>.st0{fill:#E02D5C}</style>` + `class="st0"` into inline
- * presentation attributes, then removes both.
- *
- * Only handles flat class selectors, which is all a vector exporter emits. A
- * descendant or attribute selector is left alone and its <style> block kept —
- * better a file that still renders than one silently stripped of its colour.
- */
-function flattenStyleBlocks(svg) {
-  const styleBlocks = [...svg.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)];
-  if (styleBlocks.length === 0) return { svg, flattened: 0, kept: 0 };
-
-  const rules = new Map(); // class name -> { prop: value }
-  let unsupported = 0;
-
-  for (const block of styleBlocks) {
-    const css = block[1];
-    for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      const selectors = rule[1].split(',').map((s) => s.trim()).filter(Boolean);
-      const body = rule[2];
-      const decls = {};
-      for (const decl of body.split(';')) {
-        const idx = decl.indexOf(':');
-        if (idx === -1) continue;
-        const prop = decl.slice(0, idx).trim();
-        const value = decl.slice(idx + 1).trim();
-        if (prop && value) decls[prop] = value;
-      }
-      for (const sel of selectors) {
-        if (!/^\.[A-Za-z_][\w-]*$/.test(sel)) {
-          unsupported += 1;
-          continue;
+  // Un-filter in place. Each scanline is prefixed with its filter byte and is
+  // decoded against the *reconstructed* line above, so this has to run in
+  // order — the filters are defined over output bytes, not input ones.
+  const out = Buffer.alloc(height * stride);
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[y * (stride + 1)];
+    const src = y * (stride + 1) + 1;
+    const dst = y * stride;
+    const up = dst - stride;
+    for (let x = 0; x < stride; x += 1) {
+      const value = raw[src + x];
+      const a = x >= channels ? out[dst + x - channels] : 0;
+      const b = y > 0 ? out[up + x] : 0;
+      const c = x >= channels && y > 0 ? out[up + x - channels] : 0;
+      let recon;
+      switch (filter) {
+        case 0: recon = value; break;
+        case 1: recon = value + a; break;
+        case 2: recon = value + b; break;
+        case 3: recon = value + ((a + b) >> 1); break;
+        case 4: {
+          const p = a + b - c;
+          const pa = Math.abs(p - a);
+          const pb = Math.abs(p - b);
+          const pc = Math.abs(p - c);
+          recon = value + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c);
+          break;
         }
-        const name = sel.slice(1);
-        rules.set(name, { ...(rules.get(name) || {}), ...decls });
+        default: throw new Error(`unknown filter ${filter} on row ${y}`);
+      }
+      out[dst + x] = recon & 0xff;
+    }
+  }
+
+  return { width, height, channels, data: out };
+}
+
+// ── PNG encode (RGBA) ────────────────────────────────────────────────────────
+function crc32(buf) {
+  let c = ~0;
+  for (let i = 0; i < buf.length; i += 1) {
+    c ^= buf[i];
+    for (let k = 0; k < 8; k += 1) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+  }
+  return ~c >>> 0;
+}
+
+function chunk(type, body) {
+  const head = Buffer.alloc(8);
+  head.writeUInt32BE(body.length, 0);
+  head.write(type, 4, 'ascii');
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), body])), 0);
+  return Buffer.concat([head, body, crc]);
+}
+
+function encodePng(width, height, rgba) {
+  const stride = width * 4;
+  const lines = Buffer.alloc(height * (stride + 1));
+
+  // Per-scanline adaptive filtering, picking the candidate with the smallest
+  // sum of absolute differences (the heuristic from the PNG spec's own
+  // encoding notes). On flat cartoon art this is worth roughly a third of
+  // the file against filter 0 everywhere, and it costs five passes.
+  const cand = [Buffer.alloc(stride), Buffer.alloc(stride), Buffer.alloc(stride), Buffer.alloc(stride), Buffer.alloc(stride)];
+  for (let y = 0; y < height; y += 1) {
+    const row = y * stride;
+    const prev = row - stride;
+    for (let x = 0; x < stride; x += 1) {
+      const v = rgba[row + x];
+      const a = x >= 4 ? rgba[row + x - 4] : 0;
+      const b = y > 0 ? rgba[prev + x] : 0;
+      const c = x >= 4 && y > 0 ? rgba[prev + x - 4] : 0;
+      const p = a + b - c;
+      const pa = Math.abs(p - a);
+      const pb = Math.abs(p - b);
+      const pc = Math.abs(p - c);
+      cand[0][x] = v;
+      cand[1][x] = (v - a) & 0xff;
+      cand[2][x] = (v - b) & 0xff;
+      cand[3][x] = (v - ((a + b) >> 1)) & 0xff;
+      cand[4][x] = (v - (pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 0xff;
+    }
+    let best = 0;
+    let bestScore = Infinity;
+    for (let f = 0; f < 5; f += 1) {
+      let score = 0;
+      // Signed magnitude: a filter output of 0xff is -1, i.e. a good
+      // prediction, and scoring it as 255 picks the wrong filter.
+      for (let x = 0; x < stride; x += 1) {
+        const s = cand[f][x];
+        score += s < 128 ? s : 256 - s;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        best = f;
       }
     }
+    lines[y * (stride + 1)] = best;
+    cand[best].copy(lines, y * (stride + 1) + 1);
   }
 
-  if (unsupported > 0) return { svg, flattened: 0, kept: unsupported };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // colour type: RGBA
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
 
-  // Apply. A CSS class beats a presentation attribute in SVG, so where both
-  // exist the class value is the one that was rendering — it wins here too.
-  let flattened = 0;
-  let out = svg.replace(/<([a-zA-Z][\w:-]*)((?:\s+[^>]*?)?)(\/?)>/g, (tag, name, attrs, selfClose) => {
-    const classMatch = attrs.match(/\sclass\s*=\s*"([^"]*)"/i);
-    if (!classMatch) return tag;
-    const applied = {};
-    for (const cls of classMatch[1].split(/\s+/).filter(Boolean)) {
-      Object.assign(applied, rules.get(cls) || {});
-    }
-    let rest = attrs.replace(/\sclass\s*=\s*"[^"]*"/i, '');
-    for (const [prop, value] of Object.entries(applied)) {
-      rest = rest.replace(new RegExp(`\\s${prop}\\s*=\\s*"[^"]*"`, 'i'), '');
-      rest += ` ${prop}="${value}"`;
-    }
-    if (Object.keys(applied).length > 0) flattened += 1;
-    return `<${name}${rest}${selfClose}>`;
-  });
-
-  out = out.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
-  return { svg: out, flattened, kept: 0 };
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(lines, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
 }
 
-// ── Canvas normalisation ─────────────────────────────────────────────────────
-function parseLength(value) {
-  if (!value) return null;
-  const n = parseFloat(String(value).replace(/(px|pt|mm|cm|in)$/, ''));
-  return Number.isFinite(n) ? n : null;
-}
+// ── Background knockout ──────────────────────────────────────────────────────
+// Flood fill inward from every border pixel. Returns coverage: 1 where the
+// art is, 0 where the page shows through.
+function coverageMask(img, threshold) {
+  const { width, height, channels, data } = img;
+  const n = width * height;
+  const cover = new Uint8Array(n).fill(1);
+  const seen = new Uint8Array(n);
+  const queue = new Int32Array(n);
+  let head = 0;
+  let tail = 0;
 
-/**
- * Rewrites the root to the house canvas, scaling and centring the source art
- * inside it.
- *
- * Fits by the source *viewBox* rather than by measuring real geometry. Computing
- * a true bounding box means resolving every path, transform and stroke, which
- * needs a browser — and a generator's output is consistent with itself, so any
- * padding it leaves is the same on every file. `--scale` is the knob for that.
- */
-function normaliseCanvas(svg, scaleOpt) {
-  const rootMatch = svg.match(/<svg\b([^>]*)>/i);
-  if (!rootMatch) throw new Error('no <svg> root element');
-  const rootAttrs = rootMatch[1];
-
-  let vb = rootAttrs.match(/\sviewBox\s*=\s*"([^"]+)"/i);
-  let minX = 0;
-  let minY = 0;
-  let srcW;
-  let srcH;
-
-  if (vb) {
-    const parts = vb[1].trim().split(/[\s,]+/).map(Number);
-    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
-      throw new Error(`unreadable viewBox: ${vb[1]}`);
-    }
-    [minX, minY, srcW, srcH] = parts;
-  } else {
-    srcW = parseLength(rootAttrs.match(/\swidth\s*=\s*"([^"]+)"/i)?.[1]);
-    srcH = parseLength(rootAttrs.match(/\sheight\s*=\s*"([^"]+)"/i)?.[1]);
-    if (!srcW || !srcH) throw new Error('no viewBox and no usable width/height');
-  }
-
-  const open = svg.indexOf(rootMatch[0]) + rootMatch[0].length;
-  const close = svg.lastIndexOf('</svg>');
-  if (close === -1) throw new Error('unclosed <svg>');
-  const body = svg.slice(open, close).trim();
-
-  const s = Math.min(TARGET_W / srcW, TARGET_H / srcH) * scaleOpt;
-  const tx = (TARGET_W - srcW * s) / 2 - minX * s;
-  const ty = (TARGET_H - srcH * s) / 2 - minY * s;
-
-  const round = (n) => Number(n.toFixed(4));
-  const already =
-    Math.abs(s - 1) < 1e-9 && Math.abs(tx) < 1e-9 && Math.abs(ty) < 1e-9;
-
-  const inner = already
-    ? body
-    : `<g transform="translate(${round(tx)} ${round(ty)}) scale(${round(s)})">${body}</g>`;
-
-  // The root is rebuilt from scratch to drop the exporter's width/height/version
-  // /x/y noise — which means any namespace the body still relies on has to be
-  // put back. Illustrator wires clip paths up as <use xlink:href="#…">, and an
-  // undeclared xlink: prefix makes the <use> resolve to nothing: the clipPath
-  // ends up empty, everything it clips becomes invisible, and the file renders
-  // blank with no error. Two of the reference avatars did exactly that.
-  const needsXlink = /\sxlink:[a-z]+\s*=/i.test(inner);
-  const ns =
-    'xmlns="http://www.w3.org/2000/svg"' +
-    (needsXlink ? ' xmlns:xlink="http://www.w3.org/1999/xlink"' : '');
-
-  return {
-    svg: `<svg ${ns} viewBox="0 0 ${TARGET_W} ${TARGET_H}">${inner}</svg>`,
-    source: `${round(srcW)}x${round(srcH)}`,
-    scaled: !already,
+  const isBackground = (i) => {
+    const p = i * channels;
+    return data[p] >= threshold && data[p + 1] >= threshold && data[p + 2] >= threshold;
   };
+  const push = (i) => {
+    if (seen[i] || !isBackground(i)) return;
+    seen[i] = 1;
+    cover[i] = 0;
+    queue[tail++] = i;
+  };
+
+  for (let x = 0; x < width; x += 1) {
+    push(x);
+    push((height - 1) * width + x);
+  }
+  for (let y = 0; y < height; y += 1) {
+    push(y * width);
+    push(y * width + width - 1);
+  }
+
+  while (head < tail) {
+    const i = queue[head++];
+    const x = i % width;
+    const y = (i / width) | 0;
+    if (x > 0) push(i - 1);
+    if (x < width - 1) push(i + 1);
+    if (y > 0) push(i - width);
+    if (y < height - 1) push(i + width);
+  }
+
+  return cover;
 }
 
-// ── Cruft ────────────────────────────────────────────────────────────────────
-/**
- * Removes exporter noise without touching anything load-bearing.
- *
- * The `id` handling is the subtle part. Illustrator emits ids on everything and
- * most are dead weight — but clip paths, masks, gradients and <use> are wired
- * together *by* id (`clip-path="url(#SVGID_2_)"`, `xlink:href="#SVGID_1_"`).
- * Stripping those breaks the reference and the art renders unclipped, with no
- * error anywhere. So collect every id the document actually points at first and
- * strip only the rest. This was a real bug caught by diffing a render.
- */
-function stripCruft(svg) {
-  const referenced = new Set();
-  for (const m of svg.matchAll(/url\(\s*['"]?#([^)'"\s]+)['"]?\s*\)/gi)) {
-    referenced.add(m[1]);
+// ── Downscale ────────────────────────────────────────────────────────────────
+// Box filter over the exact source rectangle each target pixel maps to, with
+// fractional weights at the edges of the box. A nearest-neighbour or
+// integer-box shortcut aliases the ink outlines into a stipple at 4x down.
+function resample(img, cover, out) {
+  const { width, height, channels, data } = img;
+  const rgba = Buffer.alloc(out * out * 4);
+  const sx = width / out;
+  const sy = height / out;
+
+  for (let ty = 0; ty < out; ty += 1) {
+    const y0 = ty * sy;
+    const y1 = y0 + sy;
+    for (let tx = 0; tx < out; tx += 1) {
+      const x0 = tx * sx;
+      const x1 = x0 + sx;
+
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let covered = 0; // weight of art pixels, for the colour average
+      let total = 0; // weight of all pixels, for alpha
+
+      for (let y = Math.floor(y0); y < Math.ceil(y1); y += 1) {
+        const wy = Math.min(y + 1, y1) - Math.max(y, y0);
+        for (let x = Math.floor(x0); x < Math.ceil(x1); x += 1) {
+          const wx = Math.min(x + 1, x1) - Math.max(x, x0);
+          const w = wy * wx;
+          const i = y * width + x;
+          total += w;
+          if (cover[i]) {
+            const p = i * channels;
+            // Honour an alpha channel if the source already had one, so a
+            // second pass over an ingested file is a no-op rather than a
+            // re-flattening.
+            const a = channels === 4 ? data[p + 3] / 255 : 1;
+            const ww = w * a;
+            r += data[p] * ww;
+            g += data[p + 1] * ww;
+            b += data[p + 2] * ww;
+            covered += ww;
+          }
+        }
+      }
+
+      const o = (ty * out + tx) * 4;
+      if (covered > 0) {
+        rgba[o] = Math.round(r / covered);
+        rgba[o + 1] = Math.round(g / covered);
+        rgba[o + 2] = Math.round(b / covered);
+        rgba[o + 3] = Math.round((covered / total) * 255);
+      }
+      // else: left as 0,0,0,0. Transparent black rather than transparent
+      // white, so a viewer that ignores alpha shows the shape, not a blank.
+    }
   }
-  for (const m of svg.matchAll(/(?:xlink:)?href\s*=\s*"#([^"]+)"/gi)) {
-    referenced.add(m[1]);
-  }
-  // begin="a.end", attributeName targets and other SMIL/anim references would
-  // also matter, but a vector exporter emits none of them.
 
-  return svg
-    .replace(/<\?xml[^>]*\?>/gi, '')
-    .replace(/<!DOCTYPE[^>]*>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<metadata[\s\S]*?<\/metadata>/gi, '')
-    .replace(/<title[\s\S]*?<\/title>/gi, '')
-    .replace(/<desc[\s\S]*?<\/desc>/gi, '')
-    .replace(/\sid\s*=\s*"([^"]*)"/gi, (match, id) => (referenced.has(id) ? match : ''))
-    .replace(/\s(?:data-name|xml:space|enable-background)\s*=\s*"[^"]*"/gi, '')
-    .replace(/>\s+</g, '><')
-    .trim();
-}
-
-/**
- * Prefixes every surviving id (and every reference to it) with the output id,
- * so `SVGID_2_` becomes `c07-SVGID_2_`.
- *
- * Exporters number ids per *file*, so every one of them calls its first clip
- * path SVGID_1_. Inline two such files into one page and `url(#SVGID_2_)`
- * resolves to whichever came first — the second character gets the first one's
- * clip and loses most of its art. Same failure mode as the class names above,
- * one level down.
- *
- * Avatar.tsx renders an <img>, which makes each file its own document and
- * immune to this. Doing it anyway costs nothing and means the files stay safe
- * to inline — for a sprite sheet, an OG image, or anything else later.
- */
-function namespaceIds(svg, prefix) {
-  const defined = new Set();
-  for (const m of svg.matchAll(/\sid\s*=\s*"([^"]+)"/gi)) defined.add(m[1]);
-  if (defined.size === 0) return svg;
-
-  let out = svg.replace(/(\sid\s*=\s*")([^"]+)(")/gi, (_, a, id, b) => `${a}${prefix}-${id}${b}`);
-  out = out.replace(/url\(\s*['"]?#([^)'"\s]+)['"]?\s*\)/gi, (match, id) =>
-    defined.has(id) ? `url(#${prefix}-${id})` : match
-  );
-  out = out.replace(/((?:xlink:)?href\s*=\s*")#([^"]+)(")/gi, (match, a, id, b) =>
-    defined.has(id) ? `${a}#${prefix}-${id}${b}` : match
-  );
-  return out;
+  return rgba;
 }
 
 // ── Naming ───────────────────────────────────────────────────────────────────
-/** `03-luchador-mask.svg` -> `Luchador Mask`. The name is alt text, nothing more. */
-function displayName(filename) {
-  return path
-    .basename(filename, path.extname(filename))
-    .replace(/^[\d._-]+/, '')
-    .replace(/[_-]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join(' ') || 'Character';
+function slugify(name) {
+  return name
+    .replace(/\.png$/i, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
-/** Natural order, so `avatar-2` sorts before `avatar-10`. */
-function naturalCompare(a, b) {
-  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+function titleCase(slug) {
+  return slug
+    .split('-')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
 }
 
-const pad2 = (n) => String(n).padStart(2, '0');
+// ── Run ──────────────────────────────────────────────────────────────────────
+const sources = fs
+  .readdirSync(inDir)
+  .filter((f) => /\.png$/i.test(f))
+  .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
 
-// ── Main ─────────────────────────────────────────────────────────────────────
-function main() {
-  const opts = parseArgs(process.argv.slice(2));
+if (sources.length === 0) {
+  console.error(`no .png files in ${inDir}`);
+  process.exit(1);
+}
 
-  if (opts.help || !opts.in) {
-    console.log(`
-Ingest generated SVGs into the avatar roster.
-
-  --in <dir>            source SVGs                              (required)
-  --out <dir>           destination                              (public/avatars)
-  --ink <hex>           outline colour to snap towards           (${DEFAULT_INK})
-  --ink-threshold <n>   RGB distance counted as "near ink"       (${DEFAULT_INK_THRESHOLD})
-  --scale <n>           uniform scale inside the canvas          (1)
-  --start <n>           first index, for appending to the cast   (0)
-  --dry-run             report, write nothing
-  --force               allow overwriting existing files
-
-Files are taken in natural filename order, and that order becomes c00, c01, …
-`);
-    process.exit(opts.in ? 0 : 1);
-  }
-
-  if (!Number.isFinite(opts.scale) || opts.scale <= 0) {
-    console.error('--scale must be a positive number');
-    process.exit(1);
-  }
-  if (!Number.isInteger(opts.start) || opts.start < 0) {
-    console.error('--start must be a non-negative integer');
-    process.exit(1);
-  }
-  if (!fs.existsSync(opts.in)) {
-    console.error(`Input directory not found: ${opts.in}`);
+const results = [];
+for (const file of sources) {
+  const id = slugify(file);
+  const dest = path.join(outDir, `${id}.png`);
+  if (fs.existsSync(dest) && !force && !dryRun) {
+    console.error(`refusing to overwrite ${dest} — pass --force`);
     process.exit(1);
   }
 
-  const files = fs
-    .readdirSync(opts.in)
-    .filter((f) => f.toLowerCase().endsWith('.svg'))
-    .sort(naturalCompare);
+  const src = fs.readFileSync(path.join(inDir, file));
+  const img = decodePng(src);
+  const cover = coverageMask(img, white);
+  const rgba = resample(img, cover, size);
+  const png = encodePng(size, size, rgba);
 
-  if (files.length === 0) {
-    console.error(`No .svg files in ${opts.in}`);
-    process.exit(1);
-  }
+  let opaque = 0;
+  for (let i = 0; i < cover.length; i += 1) opaque += cover[i];
+  const kept = ((opaque / cover.length) * 100).toFixed(1);
 
-  console.log(`\nReading ${files.length} SVG${files.length === 1 ? '' : 's'} from ${opts.in}\n`);
+  results.push({ id, file, dest, png, src: src.length, kept, w: img.width, h: img.height });
+}
 
-  const results = [];
-  const failures = [];
-
-  for (let i = 0; i < files.length; i += 1) {
-    const file = files[i];
-    const id = `c${pad2(opts.start + i)}`;
-    try {
-      let svg = fs.readFileSync(path.join(opts.in, file), 'utf8');
-      const beforeBytes = Buffer.byteLength(svg);
-
-      svg = stripCruft(svg);
-      svg = namespaceIds(svg, id);
-      const flat = flattenStyleBlocks(svg);
-      svg = flat.svg;
-      const inked = snapInk(svg, opts.ink, opts.inkThreshold);
-      svg = inked.svg;
-      const canvas = normaliseCanvas(svg, opts.scale);
-      svg = canvas.svg;
-
-      results.push({
-        id,
-        file,
-        name: displayName(file),
-        svg,
-        beforeBytes,
-        afterBytes: Buffer.byteLength(svg),
-        flattened: flat.flattened,
-        keptStyle: flat.kept,
-        inkMoved: [...inked.moved.keys()],
-        source: canvas.source,
-        scaled: canvas.scaled,
-      });
-    } catch (err) {
-      failures.push({ file, message: err.message });
-    }
-  }
-
-  // ── Report ──
-  const fw = Math.max(...results.map((r) => r.file.length), 4) + 2;
-  const sw = Math.max(...results.map((r) => r.source.length), 6) + 2;
-  console.log(`  ${'id'.padEnd(5)}${'source'.padEnd(sw)}${'file'.padEnd(fw)}name`);
-  console.log(`  ${'─'.repeat(5 + sw + fw + 12)}`);
-  for (const r of results) {
-    console.log(`  ${r.id.padEnd(5)}${r.source.padEnd(sw)}${r.file.padEnd(fw)}${r.name}`);
-  }
-
-  const totalFlat = results.reduce((n, r) => n + r.flattened, 0);
-  const inkFiles = results.filter((r) => r.inkMoved.length > 0);
-  const allInk = [...new Set(inkFiles.flatMap((r) => r.inkMoved))];
-  const scaledCount = results.filter((r) => r.scaled).length;
-  const before = results.reduce((n, r) => n + r.beforeBytes, 0);
-  const after = results.reduce((n, r) => n + r.afterBytes, 0);
-
-  console.log('');
-  console.log(`  canvas    ${scaledCount}/${results.length} rescaled onto ${TARGET_W}x${TARGET_H}`);
-  console.log(`  styles    ${totalFlat} element${totalFlat === 1 ? '' : 's'} had class fills inlined`);
+console.log(`\n  ${'id'.padEnd(18)}${'source'.padEnd(24)}${'in'.padEnd(12)}${'out'.padEnd(12)}art`);
+for (const r of results) {
   console.log(
-    `  ink       ${inkFiles.length} file${inkFiles.length === 1 ? '' : 's'} snapped to ${opts.ink}` +
-      (allInk.length ? ` (from ${allInk.join(', ')})` : '')
+    `  ${r.id.padEnd(18)}${r.file.padEnd(24)}` +
+      `${`${r.w}px ${(r.src / 1024).toFixed(0)}KB`.padEnd(12)}` +
+      `${`${size}px ${(r.png.length / 1024).toFixed(0)}KB`.padEnd(12)}${r.kept}%`,
   );
-  console.log(`  size      ${(before / 1024).toFixed(1)}KB -> ${(after / 1024).toFixed(1)}KB`);
-
-  const keptStyle = results.filter((r) => r.keptStyle > 0);
-  if (keptStyle.length > 0) {
-    console.log('');
-    console.log(`  ! ${keptStyle.length} file(s) use CSS selectors too complex to flatten;`);
-    console.log('    their <style> blocks were left intact. Inlining several of these');
-    console.log('    into one document will make their class names collide.');
-    for (const r of keptStyle) console.log(`      ${r.file}`);
-  }
-
-  if (failures.length > 0) {
-    console.log('');
-    console.log(`  ! ${failures.length} file(s) could not be processed:`);
-    for (const f of failures) console.log(`      ${f.file}: ${f.message}`);
-  }
-
-  // ── Write ──
-  const outDir = path.resolve(opts.out);
-  const clashes = results.filter((r) => fs.existsSync(path.join(outDir, `${r.id}.svg`)));
-
-  if (opts.dryRun) {
-    console.log(`\n  dry run — nothing written. ${clashes.length} file(s) would be overwritten.\n`);
-  } else {
-    if (clashes.length > 0 && !opts.force) {
-      console.error(
-        `\n  ${clashes.length} file(s) already exist in ${opts.out} ` +
-          `(${clashes.map((c) => c.id).join(', ')}).\n` +
-          '  Re-run with --force to overwrite, or --start to append instead.\n'
-      );
-      process.exit(1);
-    }
-    fs.mkdirSync(outDir, { recursive: true });
-    for (const r of results) {
-      fs.writeFileSync(path.join(outDir, `${r.id}.svg`), r.svg, 'utf8');
-    }
-    console.log(`\n  wrote ${results.length} file(s) to ${opts.out}\n`);
-  }
-
-  // ── The roster ──
-  // Printed rather than written: src/lib/avatars.ts carries documentation and
-  // helpers around this array, and rewriting the module from a script is how
-  // that gets lost.
-  console.log('  Paste into src/lib/avatars.ts (ids are positional — see the note there):\n');
-  console.log('export const CHARACTERS: Character[] = [');
-  for (const r of results) {
-    console.log(`  { id: '${r.id}', name: '${r.name.replace(/'/g, "\\'")}' },`);
-  }
-  console.log('];\n');
-
-  if (opts.start > 0) {
-    console.log(
-      `  Appending from ${results[0].id} — keep the existing entries above these,\n` +
-        '  in their current order.\n'
-    );
-  } else if (!opts.dryRun) {
-    console.log(
-      '  Roster length changed? characterFor() resolves legacy avatar codes with\n' +
-        '  hash % CHARACTERS.length, so pre-existing emoji/part-code accounts will\n' +
-        '  land on a different character than before. Nothing breaks; those players\n' +
-        '  see their face change once.\n'
-    );
-  }
-
-  process.exit(failures.length > 0 ? 1 : 0);
 }
 
-main();
+if (dryRun) {
+  console.log('\n  --dry-run: nothing written\n');
+} else {
+  fs.mkdirSync(outDir, { recursive: true });
+  for (const r of results) fs.writeFileSync(r.dest, r.png);
+  console.log(`\n  wrote ${results.length} file(s) to ${outDir}\n`);
+}
+
+console.log('  Paste into src/lib/avatars.ts:\n');
+console.log('export const CHARACTERS: Character[] = [');
+for (const r of results) console.log(`  { id: '${r.id}', name: '${titleCase(r.id)}' },`);
+console.log('];\n');

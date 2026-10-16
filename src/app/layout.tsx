@@ -1,11 +1,9 @@
 // src/app/layout.tsx
 import type { Metadata, Viewport } from 'next';
-import Script from 'next/script';
 import './globals.css';
+import { AdScript } from '@/components/ads/AdScript';
+import { CookieConsent } from '@/components/consent/CookieConsent';
 import { SessionProvider } from '@/components/providers/SessionProvider';
-
-/** Publisher id for the gutter ad rails. Unset ⇒ the script never loads. */
-const ADSENSE_CLIENT = process.env.NEXT_PUBLIC_ADSENSE_CLIENT;
 
 export const metadata: Metadata = {
   title: 'Imposter — The Video Deception Game',
@@ -103,20 +101,14 @@ export default function RootLayout({
         <SessionProvider>
           {children}
         </SessionProvider>
-        {/* Loaded once for the whole app, and only when a publisher id exists
-            — with no id the tag 400s and every page pays for the request.
-            `afterInteractive`, because an ad in the gutter must never be on
-            the critical path of a game that is waiting on a websocket.
-            AdRail is what fills the units; this only supplies the script. */}
-        {ADSENSE_CLIENT && (
-          <Script
-            id="adsbygoogle-init"
-            async
-            strategy="afterInteractive"
-            crossOrigin="anonymous"
-            src={`https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${ADSENSE_CLIENT}`}
-          />
-        )}
+        {/* The consent bar, and the ad script it gates. Both are here rather
+            than in CrtShell because both are app-wide: the question has to be
+            asked whatever route a player's first URL happens to be, including
+            a room code pasted into a fresh browser, and the script is loaded
+            once for the whole app. AdRail is what fills the units; AdScript
+            only supplies the loader, and only once consent says 'all'. */}
+        <CookieConsent />
+        <AdScript />
       </body>
     </html>
   );

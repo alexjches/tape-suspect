@@ -18,7 +18,7 @@
 // they are the one holding it; everybody else sees LOADED / EMPTY, and the
 // server only ever sends the halves out through game:assigned.
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { RoomPublic } from '@/types';
 import type { RoomActions } from '@/hooks/useRoom';
 import {
@@ -62,30 +62,57 @@ export function CustomContentPanel({ room, isHost, actions, code }: Props) {
   const supported = supportsCustomContent(mode);
   const on = room.settings.useCustomContent && supported;
 
+  // Pressing ON opens the form for the mode picked upstairs, there and then.
+  // The switch sits at the bottom of a tab body that scrolls, so the fields it
+  // reveals land below the fold and the button reads as having done nothing —
+  // hence the scroll and the focus rather than just the render.
+  //
+  // Keyed on the *transition*, not on `on` itself: a player arriving into a
+  // lobby that already has custom content on must not have their view yanked,
+  // and neither must the host on every room:updated that follows.
+  const fieldsRef = useRef<HTMLDivElement>(null);
+  const wasOn = useRef(on);
+  useEffect(() => {
+    const justTurnedOn = on && !wasOn.current;
+    wasOn.current = on;
+    // Only the host has fields; everyone else gets the LOADED/EMPTY read-out.
+    if (!justTurnedOn || !isHost) return;
+    const el = fieldsRef.current;
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // preventScroll: the smooth scroll above owns the movement — focus would
+    // otherwise jump the container instantly and fight it.
+    el.querySelector('input')?.focus({ preventScroll: true });
+  }, [on, isHost]);
+
   return (
     <section className="custom-content-panel">
       <div className="setting-row">
         <span className="setting-label">🎛️ CUSTOM CONTENT</span>
+        {/* ON/OFF, in that order, like every other binary row in the lobby —
+            this is a switch on the mode above it, and FROM POOL / MY OWN
+            described two sources as though they were two settings. Off is the
+            default; a lobby is on the pool until somebody says otherwise. */}
         {isHost && supported ? (
           <div className="setting-choice">
-            <button
-              id="custom-off-btn"
-              className={`setting-choice-btn${!on ? ' active' : ''}`}
-              onClick={() => actions.updateSettings(code, { useCustomContent: false })}
-            >
-              FROM POOL
-            </button>
             <button
               id="custom-on-btn"
               className={`setting-choice-btn${on ? ' active' : ''}`}
               onClick={() => actions.updateSettings(code, { useCustomContent: true })}
             >
-              MY OWN
+              ON
+            </button>
+            <button
+              id="custom-off-btn"
+              className={`setting-choice-btn${!on ? ' active' : ''}`}
+              onClick={() => actions.updateSettings(code, { useCustomContent: false })}
+            >
+              OFF
             </button>
           </div>
         ) : (
           <span className="setting-value">
-            {!supported ? 'NOT FOR THIS MODE' : on ? 'MY OWN' : 'FROM POOL'}
+            {!supported ? 'NOT FOR THIS MODE' : on ? 'ON' : 'OFF'}
           </span>
         )}
       </div>
@@ -105,22 +132,27 @@ export function CustomContentPanel({ room, isHost, actions, code }: Props) {
         </p>
       )}
 
-      {/* Whoever types it has seen both halves, so they cannot also play the
-          round they just wrote (§4). Said here, before the round, rather than
-          sprung when the deck rolls. */}
+      {/* Whoever supplies it has seen both halves, so they cannot also play the
+          round (§4) — and that is settled the moment the switch goes on, not
+          when the last field is filled. Said here, before the round, rather
+          than sprung when the deck rolls. */}
       {on && (
         <p className="setting-hint">
-          Whoever fills this in sits the round out — they already know which is which.
+          {isHost
+            ? 'You sit this round out — you write both halves, so you know which is which. The lobby needs one more player than usual.'
+            : 'Whoever supplies this sits the round out, so the lobby needs one more player than usual.'}
         </p>
       )}
 
-      {on && isVideoStyle(mode) && (
-        <VideoSetupPanel room={room} isHost={isHost} actions={actions} code={code} />
-      )}
+      <div ref={fieldsRef}>
+        {on && isVideoStyle(mode) && (
+          <VideoSetupPanel room={room} isHost={isHost} actions={actions} code={code} />
+        )}
 
-      {on && isPromptStyle(mode) && (
-        <CustomPromptFields room={room} isHost={isHost} actions={actions} code={code} />
-      )}
+        {on && isPromptStyle(mode) && (
+          <CustomPromptFields room={room} isHost={isHost} actions={actions} code={code} />
+        )}
+      </div>
     </section>
   );
 }

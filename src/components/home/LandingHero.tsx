@@ -27,7 +27,7 @@ import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { useShop } from '@/hooks/useShop';
 import { Avatar } from '@/components/vhs/Avatar';
-import { randomAvatar, nextAvatar, toAvatarCode } from '@/lib/avatars';
+import { randomAvatar, nextAvatar, toAvatarCode, FIRST_FRAME_AVATAR } from '@/lib/avatars';
 
 /** The signed-in player's stored identity, or null for a guest. */
 export interface LandingAccount {
@@ -36,10 +36,6 @@ export interface LandingAccount {
   avatar: string;
 }
 
-// Placeholder until the effect below deals a real one. This page is
-// prerendered, so a Math.random() in a useState initialiser would bake one
-// character into the static HTML and pick a different one at hydration.
-const FIRST_FRAME_AVATAR = 'c00';
 
 const SLIDES = [
   {

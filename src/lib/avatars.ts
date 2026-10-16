@@ -7,12 +7,17 @@
 // and an eyeball share no parts. Trading procedural combinations for designed
 // ones is the whole point — a fixed cast is what Gartic Phone does.
 //
-// The artwork is authored by scripts/generate-characters.mjs and emitted to
-// public/avatars/. Edit the art there, never here — this file only names what
-// that script produced, and the ids are positional against its CAST array, so
-// reordering the cast silently reassigns everyone's character.
+// The artwork is illustrated externally and brought in through
+// scripts/ingest-avatars.mjs, which knocks the white background out to alpha
+// and downscales to 320px. Edit the art at the source and re-run that script,
+// never here — this file only names what is on disk.
 //
-// Served statically rather than inlined: the browser caches one small file per
+// An id is its filename, which is deliberately not the positional `cNN` scheme
+// this replaced. Under that scheme reordering the cast reassigned every stored
+// avatar to a different character; under this one a rename orphans its own id
+// and nothing else, and an orphan resolves through characterFor() anyway.
+//
+// Served statically rather than inlined: the browser caches one file per
 // character, instead of every player downloading the whole set in the JS
 // bundle whether they ever see those characters or not.
 //
@@ -27,22 +32,30 @@ export interface Character {
   name: string;
 }
 
-// Ids must stay aligned with the emit order in scripts/generate-characters.mjs
-// — that script writes public/avatars/c00.svg upward from its CAST array.
+// Each id must match a file in public/avatars/ exactly. The ingest script
+// prints this array so the two cannot be hand-synced apart.
 export const CHARACTERS: Character[] = [
-  { id: 'c00', name: 'Cassette' },
-  { id: 'c01', name: 'Television' },
-  { id: 'c02', name: 'Ghost' },
-  { id: 'c03', name: 'Robot' },
-  { id: 'c04', name: 'Alien' },
-  { id: 'c05', name: 'Cat' },
-  { id: 'c06', name: 'Frog' },
-  { id: 'c07', name: 'Slime' },
-  { id: 'c08', name: 'Skull' },
-  { id: 'c09', name: 'Bat' },
-  { id: 'c10', name: 'Cactus' },
-  { id: 'c11', name: 'Eyeball' },
+  { id: 'cactus', name: 'Cactus' },
+  { id: 'dragon', name: 'Dragon' },
+  { id: 'lion-king', name: 'Lion King' },
+  { id: 'ninja', name: 'Ninja' },
+  { id: 'penguin-pilot', name: 'Penguin Pilot' },
+  { id: 'penguin', name: 'Penguin' },
+  { id: 'pirate', name: 'Pirate' },
+  { id: 'robot', name: 'Robot' },
 ];
+
+/**
+ * The character rendered before an effect has dealt a real one.
+ *
+ * Five screens need this and every one of them is prerendered, so it has to be
+ * a fixed value: Math.random() in a useState initialiser bakes one character
+ * into the static HTML and picks another at hydration. It lives here rather
+ * than as a literal in each of those files because it has to be a *valid*
+ * roster id, and a stale copy fails silently — characterFor() hashes it to
+ * some other character instead of throwing.
+ */
+export const FIRST_FRAME_AVATAR = CHARACTERS[0].id;
 
 const BY_ID = new Map(CHARACTERS.map((c) => [c.id, c]));
 
@@ -55,11 +68,12 @@ export function isAllowedAvatar(value: unknown): value is string {
  * Stable 32-bit hash, so anything that isn't a roster id resolves to a
  * *deterministic* character rather than a new one on every render.
  *
- * Two generations of stored avatars go through here: the emoji that accounts
- * and guests held before characters existed, and the `a70312` part-codes from
- * the composer that this file replaced. Deriving rather than migrating keeps
- * both recognisable — the same input always lands on the same character — and
- * means no database backfill was needed.
+ * Three generations of stored avatars go through here: the emoji that accounts
+ * and guests held before characters existed, the `a70312` part-codes from the
+ * composer that replaced those, and the `cNN` ids of the illustrated cast that
+ * replaced *those*. Deriving rather than migrating keeps every one of them
+ * recognisable — the same input always lands on the same character — and means
+ * no database backfill has ever been needed.
  */
 function hashString(input: string): number {
   let hash = 2166136261;
@@ -93,5 +107,5 @@ export function nextAvatar(value: string | null | undefined): string {
 
 /** Static path to a character's artwork. */
 export function avatarSrc(value: string | null | undefined): string {
-  return `/avatars/${characterFor(value).id}.svg`;
+  return `/avatars/${characterFor(value).id}.png`;
 }

@@ -281,7 +281,7 @@ export function LobbyScreen({ room, playerId, isHost, actions, code, error }: Pr
               finding out when the tape rolls is a nasty surprise. */}
           {sittingOut && (
             <div className="word-phase-banner" style={{ display: 'block', marginBottom: 12 }}>
-              👁️ {sittingOut.name.toUpperCase()} WROTE THIS ROUND AND SITS IT OUT —
+              👁️ {sittingOut.name.toUpperCase()} IS SUPPLYING THIS ROUND AND SITS IT OUT —
               NEEDS {MIN_PLAYERS} OTHERS TO PLAY
             </div>
           )}
@@ -500,11 +500,29 @@ export function LobbyScreen({ room, playerId, isHost, actions, code, error }: Pr
                             id={`mode-${c.id}`}
                             className={`mode-card${active ? ' active' : ''}`}
                             disabled={!isHost}
-                            title={c.description}
                             onClick={() => actions.updateSettings(code, { videoCategory: c.id })}
                           >
                             <span className="mode-card-icon">{c.icon}</span>
                             <span className="mode-card-name">{c.name.toUpperCase()}</span>
+                            {/* The hover face. It covers the icon and the label
+                                rather than sitting beside them — the card is
+                                ~234×130 and there is no room for both — with
+                                the name promoted to a header at the top and the
+                                blurb rising into the space the icon vacated.
+                                This replaces the native `title` tooltip, which
+                                would otherwise pop over the top of it.
+
+                                The blurb itself is *not* aria-hidden: it is
+                                what the title attribute used to tell a screen
+                                reader, and it now reads as part of the button's
+                                name. Only the repeated heading is hidden, or
+                                the name would say the mode twice. */}
+                            <span className="mode-card-blurb">
+                              <span className="mode-card-blurb-title" aria-hidden="true">
+                                {c.name.toUpperCase()}
+                              </span>
+                              <span className="mode-card-blurb-text">{c.description}</span>
+                            </span>
                           </button>
                         );
                       })}

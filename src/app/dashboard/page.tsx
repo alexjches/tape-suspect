@@ -16,12 +16,9 @@ import { VIDEO_CATEGORIES } from '@/lib/videoCategories';
 import { useShop } from '@/hooks/useShop';
 import { CrtShell } from '@/components/vhs/CrtShell';
 import { Avatar } from '@/components/vhs/Avatar';
-import { randomAvatar, nextAvatar } from '@/lib/avatars';
+import { randomAvatar, nextAvatar, FIRST_FRAME_AVATAR } from '@/lib/avatars';
 import Link from 'next/link';
 
-// Placeholder until the effect below deals a real one — this page is
-// prerendered, so the roll cannot happen during render.
-const FIRST_FRAME_AVATAR = 'c00';
 
 // What a deck gets formatted with when you press HOST. Everything here is
 // changeable from the lobby OSD a second later, so these only have to be the
@@ -33,6 +30,11 @@ const HOST_DEFAULTS = {
   voteVisibility: 'public' as const,
   videoCategory: 'memes',
 };
+
+// Shared by the footer's two RETURN elements — a <button> behind the browse
+// door and a <Link> on the router — so the one control cannot drift in size
+// between the two views it appears in.
+const FOOTER_BACK_STYLE = { margin: 0, padding: '6px 16px' } as const;
 
 // Display lookup for the lobby list. Covers all four modes even though the
 // lobby only offers two — voice and video are Phase 2 (spec §16), and a room
@@ -331,7 +333,7 @@ function DashboardContent() {
                 <div className="deck-card magenta deck-card-static">
                   <span className="deck-card-art">
                     <span className="deck-card-crowd">
-                      <Avatar code="c05" size={126} />
+                      <Avatar code="ninja" size={126} />
                     </span>
                     <span className="deck-card-glyph">🔑</span>
                   </span>
@@ -382,9 +384,9 @@ function DashboardContent() {
                         them overlapping reads as "a room with people in it"
                         faster than any icon does. */}
                     <span className="deck-card-crowd">
-                      <Avatar code="c07" size={104} />
-                      <Avatar code="c02" size={128} />
-                      <Avatar code="c10" size={104} />
+                      <Avatar code="dragon" size={104} />
+                      <Avatar code="penguin-pilot" size={128} />
+                      <Avatar code="ninja" size={104} />
                     </span>
                   </span>
                   <span className="deck-card-label">
@@ -412,7 +414,7 @@ function DashboardContent() {
                 >
                   <span className="deck-card-art">
                     <span className="deck-card-crowd">
-                      <Avatar code="c01" size={126} />
+                      <Avatar code="dragon" size={126} />
                     </span>
                     <span className="deck-card-glyph">📼</span>
                   </span>
@@ -434,15 +436,12 @@ function DashboardContent() {
             ) : (
               /* ── Public deck browser ──────────────────────────── */
               <div className="router-browse">
+                {/* No BACK button up here. RETURN in the footer is the way out
+                    of this view now (see below), and two back affordances on
+                    one screen — one at the top, one at the bottom, going to
+                    different places — is the thing that made RETURN read as
+                    "leave the router" rather than "leave the list". */}
                 <div className="router-browse-head">
-                  <button
-                    id="browse-back-btn"
-                    className="btn-brutal dark"
-                    style={{ margin: 0, padding: '6px 14px' }}
-                    onClick={() => setView('router')}
-                  >
-                    ◀ BACK
-                  </button>
                   <h3
                     className="brutal-title"
                     style={{ fontSize: '1.3rem', color: 'var(--neon-cyan)', textShadow: 'none', margin: 0 }}
@@ -524,14 +523,38 @@ function DashboardContent() {
                 alignItems: 'center',
               }}
             >
-              <Link
-                href="/"
-                id="btn-back-home"
-                className="btn-brutal dark"
-                style={{ margin: 0, padding: '6px 16px' }}
-              >
-                ◀ RETURN
-              </Link>
+              {/* RETURN goes back one step, not all the way out. Behind the
+                  browse door that step is the router itself; from the router
+                  it is the landing page. It used to leave for `/` from both,
+                  so opening the public list and pressing the only visible
+                  RETURN threw away the door you had just come through.
+
+                  A <button> in one case and a <Link> in the other, rather than
+                  a button that calls router.push for both: the router → `/`
+                  step is a real navigation and should stay a real link, so it
+                  prefetches and answers a middle-click. */}
+              {view === 'browse' ? (
+                <button
+                  id="btn-back-home"
+                  className="btn-brutal dark"
+                  style={FOOTER_BACK_STYLE}
+                  onClick={() => {
+                    setError('');
+                    setView('router');
+                  }}
+                >
+                  ◀ RETURN
+                </button>
+              ) : (
+                <Link
+                  href="/"
+                  id="btn-back-home"
+                  className="btn-brutal dark"
+                  style={FOOTER_BACK_STYLE}
+                >
+                  ◀ RETURN
+                </Link>
+              )}
               <div className="balance-pill" style={{ margin: 0 }}>
                 <span className="coin-icon">🟢</span>
                 {/* join-host.html sets this label to #000, but .balance-pill's

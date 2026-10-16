@@ -17,14 +17,13 @@ import { PromptScreen } from '@/components/game/PromptScreen';
 import { WordsScreen } from '@/components/game/WordsScreen';
 import { DrawScreen } from '@/components/game/DrawScreen';
 import { WavelengthScreen } from '@/components/game/WavelengthScreen';
+import { VoiceScreen } from '@/components/game/VoiceScreen';
 import { BluffScreen } from '@/components/game/BluffScreen';
 import { DeliberationScreen } from '@/components/game/DeliberationScreen';
 import { ResultsScreen } from '@/components/results/ResultsScreen';
 import { Avatar } from '@/components/vhs/Avatar';
-import { randomAvatar, nextAvatar } from '@/lib/avatars';
+import { randomAvatar, nextAvatar, FIRST_FRAME_AVATAR } from '@/lib/avatars';
 
-// Placeholder for the first paint; the effect below deals a real character.
-const FIRST_FRAME_AVATAR = 'c00';
 
 export default function RoomPage() {
   const { code } = useParams<{ code: string }>();
@@ -308,6 +307,18 @@ export default function RoomPage() {
           code={code}
           assignment={state.assignment}
           strokes={state.strokes}
+          turnState={state.turnState}
+          actions={actions}
+        />
+      )}
+
+      {state.phase === 'voicing' && (
+        <VoiceScreen
+          room={state.room}
+          playerId={playerId}
+          code={code}
+          takes={state.takes}
+          listening={state.listening}
           turnState={state.turnState}
           actions={actions}
         />

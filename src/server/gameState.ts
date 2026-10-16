@@ -15,10 +15,12 @@ import type {
   EquippedCosmetics,
   GameResults,
   GameWord,
+  VoiceLine,
+  VoiceTake,
   VoteVisibility,
 } from '../types';
 // Client-safe metadata only — the drawing *pool* lives in server/drawLibrary.
-import { isDrawStyle, supportsCustomContent } from '../lib/videoCategories';
+import { isDrawStyle, isVoiceStyle, supportsCustomContent } from '../lib/videoCategories';
 
 export type PlayerStatus = 'connected' | 'disconnected';
 
@@ -83,6 +85,7 @@ export type GamePhase =
   | 'guessing'
   | 'writing'
   | 'bluffvote'
+  | 'voicing'
   | 'deliberation'
   | 'results';
 
@@ -188,6 +191,26 @@ export interface RoomState {
   bluffOrder: string[];
   /** voterId -> option id (a playerId, or REAL_DEFINITION_ID). */
   bluffVotes: Record<string, string>;
+
+  // ── Choicer Voicer ──
+  // The line is public and rides sanitizeRoom; the reference fingerprint is
+  // not. Same split as Wavelength's spectrum/target, for the same reason: the
+  // reference is what every take is measured against, so a client that held it
+  // could hand it straight back and score 100%.
+  voiceLine: VoiceLine | null;
+  /** 384 numbers from the original recording, or null on a consensus round. */
+  voiceReference: number[] | null;
+  /**
+   * Every take this round, in turn order. Public (the leaderboard builds live)
+   * and deliberately without the fingerprints — see VoiceTake.
+   */
+  takes: VoiceTake[];
+  /**
+   * playerId -> their take's fingerprint. Server-only and kept for exactly one
+   * job: a consensus round cannot score anybody until every take is in, because
+   * what each is scored against is the average of the others. Never broadcast.
+   */
+  takePrints: Record<string, number[]>;
   /**
    * Every stroke on the shared canvas, in order.
    *
@@ -288,6 +311,10 @@ function freshRoundState() {
     definitions: {} as Record<string, string>,
     bluffOrder: [] as string[],
     bluffVotes: {} as Record<string, string>,
+    voiceLine: null as VoiceLine | null,
+    voiceReference: null as number[] | null,
+    takes: [] as VoiceTake[],
+    takePrints: {} as Record<string, number[]>,
     videoEnded: {} as Record<string, boolean>,
     readyToAdvance: {} as Record<string, boolean>,
     imposterVideoEndedAt: null,
@@ -696,12 +723,12 @@ function shuffle<T>(input: T[]): T[] {
  * round-2 path and the reconnect path to drift out of step.
  *
  * `wordsUsed` and `settings.wordsPerPlayer` therefore count strokes on a
- * drawing round. The names are left alone for the same reason
- * `settings.videoCategory` still holds mode ids: renaming them ripples through
- * RoomState, RoomPublic, two socket events and both screens for no behavioural
- * gain.
+ * drawing round and takes on a Choicer Voicer round. The names are left alone
+ * for the same reason `settings.videoCategory` still holds mode ids: renaming
+ * them ripples through RoomState, RoomPublic, two socket events and both
+ * screens for no behavioural gain.
  */
-function beginTurnPhase(room: RoomState, phase: 'words' | 'drawing'): void {
+function beginTurnPhase(room: RoomState, phase: 'words' | 'drawing' | 'voicing'): void {
   room.phase = phase;
   room.wordsUsed = {};
   // Turn order is randomized each round and visible to all players (section 7).
@@ -719,6 +746,90 @@ export function beginWordPhase(room: RoomState): void {
 export function beginDrawPhase(room: RoomState): void {
   room.strokes = [];
   beginTurnPhase(room, 'drawing');
+}
+
+// ─── Choicer Voicer ─────────────────────────────────────────────────────────
+//
+// A performance round on the shared turn engine: one take each, in a random
+// order, scored on how closely the frequency shape of the take matches the
+// line. No hidden role, no ballot — like Wavelength and Bluff it ends in a
+// table rather than in an accusation.
+
+/**
+ * One take per player, deliberately.
+ *
+ * `wordsPerPlayer` is a lobby setting the host can push to 10, and ten takes
+ * each is a twenty-minute round of listening to people clear their throats.
+ * The turn engine reads that setting through `playerFinishedTurn`, so this is
+ * pinned here rather than left to the slider.
+ */
+export const TAKES_PER_PLAYER = 1;
+
+/**
+ * The listen beat at the top of the round, before anybody performs.
+ *
+ * The room hears the original once together — that is the whole premise of the
+ * mode, and going straight to "player one, perform" asks somebody to do an
+ * impression of something nobody has heard yet. Long enough for a clip of a few
+ * seconds plus the beat either side of it; the REPLAY control is live from here
+ * on, so this is a shared first listen rather than the only one.
+ *
+ * Only armed when the line actually has audio — a text-only line has nothing to
+ * play, and holding an empty screen for 12 seconds would read as a hang.
+ */
+export const VOICE_LISTEN_SECONDS = 12;
+
+/**
+ * Opens the performance round on the listen beat.
+ *
+ * Deliberately does NOT leave `beginTurnPhase`'s turn-one state in place. The
+ * order is drawn here, but `turnIndex` is rewound to -1 and `activePlayerId`
+ * cleared so the phase opens with nobody up: the clock showing is the listen
+ * countdown, and `advanceTurn()` walks -1 -> 0 when it expires, which is the
+ * same step it takes between every other pair of turns. That is why the beat is
+ * not a phase of its own — it needs no new state, only a turn that has not
+ * started yet.
+ */
+export function beginVoicePhase(room: RoomState, withAudio: boolean): void {
+  room.takes = [];
+  room.takePrints = {};
+  beginTurnPhase(room, 'voicing');
+  if (!withAudio) return;
+  room.turnIndex = -1;
+  room.activePlayerId = null;
+  room.turnTimeLeft = VOICE_LISTEN_SECONDS;
+}
+
+/** True while the room is on the opening listen beat rather than on a turn. */
+export function isListening(room: RoomState): boolean {
+  return room.phase === 'voicing' && room.turnIndex < 0;
+}
+
+/**
+ * Records one performance and counts it against the player's turn allowance.
+ *
+ * The fingerprint is stashed apart from the public take for the reason on
+ * `takePrints`: a consensus round has nothing to score against until the last
+ * take lands, so the vectors have to survive the turn while the visible half
+ * (a match percentage, or null for a scored-later round) goes out immediately.
+ *
+ * Counting through `wordsUsed` is what makes the shared engine advance — the
+ * same line `recordWord` and `recordStroke` carry.
+ */
+export function recordTake(
+  room: RoomState,
+  playerId: string,
+  take: VoiceTake,
+  print: number[] | null
+): void {
+  room.wordsUsed[playerId] = (room.wordsUsed[playerId] || 0) + 1;
+  room.takes.push(take);
+  if (print) room.takePrints[playerId] = print;
+}
+
+/** Is this player still owed a take this round? Used to refuse a second one. */
+export function hasTaken(room: RoomState, playerId: string): boolean {
+  return room.takes.some((t) => t.playerId === playerId);
 }
 
 // ─── Wavelength ──────────────────────────────────────────────────────────────
@@ -902,11 +1013,22 @@ export const TURN_SECONDS = 10;
  * just a weak clue.
  */
 export const DRAW_TURN_SECONDS = 20;
+/**
+ * A performance turn. Longer than either of the others because it is three
+ * things end to end: hearing the line in your head, pressing record, and
+ * actually saying it — and unlike a word or a stroke, a take that gets cut off
+ * halfway scores as though the player mumbled rather than as though they ran
+ * out of time. `VOICE_RECORD_SECONDS` on the client caps the recording itself
+ * well inside this, so the clock is never what ends a take.
+ */
+export const VOICE_TURN_SECONDS = 25;
 export const DELIBERATION_SECONDS = 90;
 
 /** How long the current phase gives each player. */
 export function turnSeconds(room: RoomState): number {
-  return room.phase === 'drawing' ? DRAW_TURN_SECONDS : TURN_SECONDS;
+  if (room.phase === 'drawing') return DRAW_TURN_SECONDS;
+  if (room.phase === 'voicing') return VOICE_TURN_SECONDS;
+  return TURN_SECONDS;
 }
 
 /**
@@ -932,9 +1054,16 @@ export const DELIBERATION_SECONDS_NO_WORDS = 180;
  * drawing turn involves no keyboard, so a text-off lobby can play it exactly as
  * written — and skipping it would leave a round with no evidence at all to vote
  * on, which is not a shorter game but a broken one.
+ *
+ * Choicer Voicer is exempt on the same rule — a take is a microphone, not a
+ * keyboard. It never reaches this in practice (a voice round goes from
+ * game:start straight onto the turn engine and ends in a score, with no word
+ * phase to skip and no deliberation to lengthen), but leaving it out would put
+ * a second, quietly different answer to "is this a typing round" in the file.
  */
 export function skipsWordPhase(room: RoomState): boolean {
-  return room.settings.chatType === 'none' && !isDrawStyle(room.settings.videoCategory);
+  const mode = room.settings.videoCategory;
+  return room.settings.chatType === 'none' && !isDrawStyle(mode) && !isVoiceStyle(mode);
 }
 
 /** How long this room's vote window runs, in seconds. */
@@ -947,8 +1076,18 @@ export function recordWord(room: RoomState, playerId: string, word: GameWord): v
   room.words.push(word);
 }
 
+/**
+ * How many turns each player owes in the current phase.
+ *
+ * Everything but Choicer Voicer runs off the host's slider. A performance is
+ * pinned to one — see TAKES_PER_PLAYER.
+ */
+export function turnsPerPlayer(room: RoomState): number {
+  return room.phase === 'voicing' ? TAKES_PER_PLAYER : room.settings.wordsPerPlayer;
+}
+
 export function playerFinishedTurn(room: RoomState, playerId: string): boolean {
-  return (room.wordsUsed[playerId] || 0) >= room.settings.wordsPerPlayer;
+  return (room.wordsUsed[playerId] || 0) >= turnsPerPlayer(room);
 }
 
 /**

@@ -13,6 +13,11 @@ import {
   findRoomHostedBy,
   addPlayer,
   beginDrawPhase,
+  beginVoicePhase,
+  isListening,
+  recordTake,
+  hasTaken,
+  turnsPerPlayer,
   beginCluePhase,
   beginGuessPhase,
   beginWritingPhase,
@@ -74,11 +79,19 @@ import {
   isDrawStyle,
   isSpectrumStyle,
   isBluffStyle,
+  isVoiceStyle,
   isKnownCategory,
   isPromptStyle,
 } from '../lib/videoCategories';
+import {
+  isFingerprint,
+  similarity,
+  averageFingerprint,
+  scoreMatch,
+} from '../lib/audioFingerprint';
 import { pickPromptPair } from './promptLibrary';
 import { pickDrawWord } from './drawLibrary';
+import { pickVoiceLine, publicLine } from './voiceLibrary';
 import { pickSpectrum, scoreGuess } from './wavelengthLibrary';
 import {
   pickBluffWord,
@@ -102,6 +115,7 @@ import {
   botVoteDelay,
   botWord,
   botEmoji,
+  botFingerprint,
   botVoteTarget,
 } from './bots';
 import type {
@@ -113,6 +127,7 @@ import type {
   GameResults,
   GameWord,
   ReactionEmoji,
+  VoiceTake,
 } from '../types';
 import { isReactionEmoji } from '../types';
 
@@ -214,6 +229,12 @@ function sanitizeRoom(room: RoomState) {
     // secrecy surface, so keep the two apart when editing.
     spectrum: room.spectrum,
     psychicClue: room.psychicClue,
+    // The public half of Choicer Voicer, and the same split as the spectrum
+    // above: the line is what everyone is aiming at, so it has to be visible,
+    // while `room.voiceReference` — the fingerprint every take is measured
+    // against — stays off this object entirely. Handing it out would let a
+    // client submit it back for a flawless score.
+    voiceLine: room.voiceLine,
     players: room.players.map((p) => ({
       id: p.id,
       name: p.name,
@@ -452,6 +473,40 @@ function runBotTick(code: string, io: Server) {
 
       if (playerFinishedTurn(room, bot.id)) nextTurn(room, io);
       else broadcastTurnState(room, io);
+      return;
+    }
+
+    case 'voicing': {
+      const performer = room.activePlayerId;
+      if (!performer) return;
+      const bot = bots.find((p) => p.id === performer);
+      if (!bot || !bot.bot) return;
+      if (playerFinishedTurn(room, performer)) return;
+
+      if (bot.bot.speakAt === 0) {
+        bot.bot.speakAt = now + botSpeakDelay();
+        return;
+      }
+      if (now < bot.bot.speakAt) return;
+      bot.bot.speakAt = 0;
+
+      // A bot has no microphone, so what it cannot do is record. It can still
+      // produce a fingerprint of the right shape — and doing so is what keeps
+      // the rule: the score below is computed by the same `similarity()` a
+      // player's take goes through, not fabricated. See botFingerprint().
+      const print = botFingerprint(room.voiceReference);
+      const match = room.voiceReference ? similarity(print, room.voiceReference) : null;
+      const take: VoiceTake = {
+        playerId: bot.id,
+        playerName: bot.name,
+        avatar: bot.avatar,
+        match,
+        points: match === null ? 0 : scoreMatch(match),
+        turnIndex: room.turnIndex,
+      };
+      recordTake(room, bot.id, take, print);
+      io.to(code).emit('game:take', take);
+      nextTurn(room, io);
       return;
     }
 
@@ -871,9 +926,43 @@ function emitDrawPhaseStart(room: RoomState, io: Server) {
   else startDeliberation(room, io);
 }
 
+// ─── Choicer Voicer ─────────────────────────────────────────────────────────
+
+/**
+ * Announces the performance round.
+ *
+ * Its own event rather than a flag on `game:wordPhaseStart`, for the reason
+ * `game:drawPhaseStart` is: the screens are nothing alike and `useRoom` has to
+ * route without inspecting the mode. The turn engine underneath is the same one
+ * — this payload is the draw phase's with the line in place of the stroke
+ * allowance.
+ */
+function emitVoicePhaseStart(room: RoomState, io: Server) {
+  io.to(room.code).emit('game:voicePhaseStart', {
+    ...sanitizeRoom(room),
+    turnOrder: room.turnOrder,
+    activePlayerId: room.activePlayerId,
+    turnTimeLeft: room.turnTimeLeft,
+    turnIndex: room.turnIndex,
+    takesPerPlayer: turnsPerPlayer(room),
+    // The room is hearing the original together and nobody is up yet. The
+    // client cannot infer this from a null activePlayerId alone — that is also
+    // what a finished phase looks like.
+    listening: isListening(room),
+  });
+
+  // The listen beat and a turn run on the same clock, because the beat *is* a
+  // turn that has not started: startTurnTimer's tick calls nextTurn at zero,
+  // and nextTurn's advanceTurn walks -1 -> 0, which is the ordinary step from
+  // one turn to the next.
+  if (isListening(room) || room.activePlayerId) startTurnTimer(room, io);
+  else finalizeVoiceResults(room, io);
+}
+
 function startTurnTimer(room: RoomState, io: Server) {
-  // Both turn-taking phases run on this timer. The guard has to accept either,
-  // or a drawing turn's first tick sees phase !== 'words', clears itself, and
+  // All three turn-taking phases run on this timer. The guard has to capture
+  // the phase it was armed in rather than testing for one, or a drawing or
+  // performance turn's first tick sees phase !== 'words', clears itself, and
   // the round sits on player one forever.
   const phase = room.phase;
   setRoomTimer(room.code, () => {
@@ -884,8 +973,12 @@ function startTurnTimer(room: RoomState, io: Server) {
     }
     current.turnTimeLeft--;
     if (current.turnTimeLeft <= 0) {
-      // Section 7: timing out auto-skips with a blank word.
+      // Section 7: timing out auto-skips with a blank word. On the Choicer
+      // Voicer listen beat it is not a skip at all — it is the step onto
+      // player one, which advanceTurn makes from turnIndex -1.
       nextTurn(current, io);
+    } else if (isListening(current)) {
+      broadcastListenTick(current, io);
     } else {
       broadcastTurnState(current, io);
     }
@@ -895,7 +988,12 @@ function startTurnTimer(room: RoomState, io: Server) {
 function nextTurn(room: RoomState, io: Server) {
   const hasMore = advanceTurn(room);
   if (!hasMore) {
-    startDeliberation(room, io);
+    // A performance round is scored, not accused: the turn order running out is
+    // the end of the game, not the start of a ballot. Branching on the phase
+    // rather than on the mode id keeps this one line honest for any future
+    // turn-based scored mode.
+    if (room.phase === 'voicing') finalizeVoiceResults(room, io);
+    else startDeliberation(room, io);
     return;
   }
   broadcastTurnState(room, io);
@@ -909,6 +1007,17 @@ function broadcastTurnState(room: RoomState, io: Server) {
     turnIndex: room.turnIndex,
     wordsUsed: room.wordsUsed,
   });
+}
+
+/**
+ * The listen beat ticks so every client shows the same countdown.
+ *
+ * Its own emit rather than `broadcastTurnState`, which is a turn-engine payload
+ * and would say "nobody is up" — true, but indistinguishable from a phase that
+ * has run out of players.
+ */
+function broadcastListenTick(room: RoomState, io: Server) {
+  io.to(room.code).emit('game:listenTick', { secondsLeft: room.turnTimeLeft });
 }
 
 // ─── Deliberation (section 8) ────────────────────────────────────────────────
@@ -1197,6 +1306,30 @@ function sendCatchUp(room: RoomState, playerId: string, socket: Socket, io: Serv
       strokesPerPlayer: room.settings.wordsPerPlayer,
     });
     socket.emit('game:strokeHistory', { strokes: room.strokes });
+    socket.emit('game:turnState', {
+      activePlayerId: room.activePlayerId,
+      turnTimeLeft: room.turnTimeLeft,
+      turnIndex: room.turnIndex,
+      wordsUsed: room.wordsUsed,
+    });
+    return;
+  }
+
+  // A performance round replays the line and every take so far. The takes are
+  // the round's whole visible state — the leaderboard builds as people go — so
+  // coming back to an empty board would look like the round had restarted.
+  // Nothing private is replayed because nothing is dealt privately here.
+  if (room.phase === 'voicing') {
+    socket.emit('game:voicePhaseStart', {
+      ...sanitizeRoom(room),
+      turnOrder: room.turnOrder,
+      activePlayerId: room.activePlayerId,
+      turnTimeLeft: room.turnTimeLeft,
+      turnIndex: room.turnIndex,
+      takesPerPlayer: turnsPerPlayer(room),
+      listening: isListening(room),
+    });
+    socket.emit('game:takeHistory', { takes: room.takes });
     socket.emit('game:turnState', {
       activePlayerId: room.activePlayerId,
       turnTimeLeft: room.turnTimeLeft,
@@ -1589,7 +1722,15 @@ export function registerSocketHandlers(io: Server) {
         // clear above.
         if (data.useCustomContent !== undefined) {
           room.settings.useCustomContent = !!data.useCustomContent;
-          if (!data.useCustomContent) {
+          if (data.useCustomContent) {
+            // Switching it on is itself the act of taking the round on (§4):
+            // whoever flips it is the one about to write both halves, so they
+            // are the author from this moment rather than from the first
+            // keystroke. Assigning it here is what makes the sit-out — and the
+            // one extra head the lobby now needs — visible before anything is
+            // typed, instead of appearing under the roster mid-sentence.
+            room.customContentAuthorId = actorId(socket);
+          } else {
             // Turning it off drops what was typed. Keeping it would let a
             // second press of the switch put a pair back that the lobby has
             // since been told is gone — and the author would silently be a
@@ -1807,6 +1948,7 @@ export function registerSocketHandlers(io: Server) {
       const drawRound = isDrawStyle(genre);
       const spectrumRound = isSpectrumStyle(genre);
       const bluffRound = isBluffStyle(genre);
+      const voiceRound = isVoiceStyle(genre);
       // Custom is a switch on the mode now, not a mode — and it only bites on
       // the two styles that have a pair to type. Fake Artist, Wavelength and
       // Bluff always draw from their own pool, so nobody sits out.
@@ -1821,7 +1963,7 @@ export function registerSocketHandlers(io: Server) {
       if (playingCount < MIN_PLAYERS) {
         socket.emit('game:error', {
           message: sittingOut
-            ? `Need ${MIN_PLAYERS} players besides ${sittingOut.name}, who wrote the round`
+            ? `Need ${MIN_PLAYERS} players besides ${sittingOut.name}, who is supplying the round`
             : `Need at least ${MIN_PLAYERS} players to start`,
         });
         return;
@@ -1846,8 +1988,40 @@ export function registerSocketHandlers(io: Server) {
       let drawPick: { word: string; theme: string } | null = null;
       let spectrumPick: { left: string; right: string; target: number } | null = null;
       let bluffPick: { word: string; definition: string } | null = null;
+      let voicePick: { line: RoomState['voiceLine']; reference: number[] | null } | null = null;
 
-      if (bluffRound) {
+      if (voiceRound) {
+        const pick = pickVoiceLine(room.usedVideoIds);
+        if (!pick) {
+          socket.emit('game:error', {
+            message: 'The Choicer Voicer deck needs at least one line configured',
+          });
+          return;
+        }
+        const line = publicLine(pick.entry);
+        voicePick = {
+          line: {
+            id: line.id,
+            quote: line.quote,
+            source: line.source,
+            audio: line.audio,
+            youtubeId: line.youtubeId,
+            startSeconds: line.startSeconds,
+            endSeconds: line.endSeconds,
+            peaks: line.peaks,
+            // Renamed at the boundary on purpose: the library calls it
+            // "has a reference", the room calls it what it means to a player.
+            scoredAgainstOriginal: line.hasReference,
+          },
+          reference: pick.entry.fingerprint,
+        };
+        room.usedVideoIds = pick.usedIds;
+        console.log(
+          `[Voicer] ${data.code}: ${pick.entry.id} ` +
+            (pick.entry.fingerprint ? 'vs the original' : 'vs the room (no reference)') +
+            (pick.recycled ? ' (pool exhausted, history recycled)' : '')
+        );
+      } else if (bluffRound) {
         const pick = pickBluffWord(room.usedVideoIds);
         if (!pick) {
           socket.emit('game:error', {
@@ -1961,6 +2135,10 @@ export function registerSocketHandlers(io: Server) {
         room.spectrumTarget = spectrumPick.target;
       }
       room.bluffWord = bluffPick;
+      if (voicePick) {
+        room.voiceLine = voicePick.line;
+        room.voiceReference = voicePick.reference;
+      }
       // Must run before the imposter pick — the sitter is not a candidate.
       const spectator = assignSpectator(room, isCustomRound);
       // Section 3: both imposters watch the same secret video, so one pick of
@@ -1973,7 +2151,11 @@ export function registerSocketHandlers(io: Server) {
       // below — assignmentFor reads room.psychicId, and picking afterwards
       // dealt every player the empty non-psychic assignment.
       // Bluff has no hidden role either — everybody writes, everybody votes.
-      if (bluffRound) {
+      // Nor does Choicer Voicer: everybody performs the same line in the open,
+      // and leaving an imposter drawn would put a name in `imposterIds`, which
+      // the results screen reads as "this player was hiding" and the reward
+      // table reads as a side to pay.
+      if (bluffRound || voiceRound) {
         room.imposterIds = [];
         room.imposterId = null;
       }
@@ -2040,6 +2222,19 @@ export function registerSocketHandlers(io: Server) {
       if (bluffRound) {
         beginWritingPhase(room);
         emitWritingPhaseStart(room, io);
+      }
+
+      // Choicer Voicer opens straight onto the line, like the canvas does. No
+      // Ready Check and no `game:assigned`: there is nothing dealt privately,
+      // because everybody is performing the same thing and the whole point is
+      // that the room can hear how far off you were.
+      if (voiceRound) {
+        // The listen beat only exists when there is something to listen to.
+        // The listen beat is only armed when there is something to listen to —
+        // either a local clip or a YouTube embed. Holding an empty screen for
+        // 12 seconds on a quote-only line reads as a hang.
+        beginVoicePhase(room, !!(room.voiceLine?.audio || room.voiceLine?.youtubeId));
+        emitVoicePhaseStart(room, io);
       }
 
       // Simulated players only act once a round is under way. Reset first:
@@ -2245,6 +2440,53 @@ export function registerSocketHandlers(io: Server) {
       } else {
         broadcastTurnState(room, io);
       }
+    });
+
+    // ─── Choicer Voicer: one take, on your turn ─────────────────────────
+    // Same shape as game:stroke above — the same turn engine, so the two have
+    // to agree about when a player is out of turns.
+    //
+    // What arrives is a **fingerprint, not audio**: 384 numbers describing the
+    // frequency shape of the performance. The recording itself never leaves the
+    // performer's browser (see VoiceScreen), which is why this handler has no
+    // size limit worth speaking of and no moderation surface.
+    socket.on('game:take', (data: { code: string; fingerprint: unknown }) => {
+      const room = getRoom(data.code);
+      if (!room || room.phase !== 'voicing') return;
+      const performerId = actorId(socket);
+      if (room.activePlayerId !== performerId) return; // not your turn
+
+      const player = room.players.find((p) => p.id === performerId);
+      if (!player) return;
+      if (playerFinishedTurn(room, performerId) || hasTaken(room, performerId)) return;
+
+      // Shape-checked like any other user input at this boundary. A vector of
+      // the wrong length or with junk in it is dropped rather than clamped:
+      // unlike a stroke there is no sensible repair, and silently scoring a
+      // malformed take would put a meaningless number on the leaderboard.
+      if (!isFingerprint(data.fingerprint)) {
+        socket.emit('game:error', { message: 'That take did not record cleanly — try again' });
+        return;
+      }
+      const print = data.fingerprint;
+
+      // On a round with a reference the score is known now. Without one it
+      // cannot be — a consensus round scores each take against the average of
+      // the others, which does not exist until the last player has gone — so
+      // the take goes up with a null match and the table fills in at results.
+      const match = room.voiceReference ? similarity(print, room.voiceReference) : null;
+      const take: VoiceTake = {
+        playerId: performerId,
+        playerName: player.name,
+        avatar: player.avatar,
+        match,
+        points: match === null ? 0 : scoreMatch(match),
+        turnIndex: room.turnIndex,
+      };
+      recordTake(room, performerId, take, print);
+
+      io.to(data.code).emit('game:take', take);
+      nextTurn(room, io);
     });
 
     socket.on('game:word', (data: { code: string; word: string }) => {
@@ -2528,6 +2770,8 @@ function finalizeResults(room: RoomState, io: Server, accusedIds: string[]) {
     // is people trying to work out the first of these from the drawing.
     drawWord: room.drawWord?.word ?? null,
     drawTheme: room.drawWord?.theme ?? null,
+    voiceLine: null,
+    voiceTakes: null,
     bluffWord: null,
     bluffTruth: null,
     bluffReveal: null,
@@ -2633,6 +2877,8 @@ function finalizeSpectrumResults(room: RoomState, io: Server) {
     imposterPrompt: null,
     drawWord: null,
     drawTheme: null,
+    voiceLine: null,
+    voiceTakes: null,
     bluffWord: null,
     bluffTruth: null,
     bluffReveal: null,
@@ -2730,6 +2976,8 @@ function finalizeBluffResults(room: RoomState, io: Server) {
     imposterPrompt: null,
     drawWord: null,
     drawTheme: null,
+    voiceLine: null,
+    voiceTakes: null,
     bluffWord: room.bluffWord?.word ?? null,
     bluffTruth: truth,
     bluffReveal: reveal,
@@ -2751,6 +2999,142 @@ function finalizeBluffResults(room: RoomState, io: Server) {
   io.to(room.code).emit('game:results', payload);
   bankRewards(room, payload);
   console.log(`[Bluff] Results in ${room.code}: "${room.bluffWord?.word}"`);
+}
+
+/**
+ * Closes a Choicer Voicer round: settle every take, pay by points, reveal.
+ *
+ * A third sibling of finalizeResults, for the reason the other two are: there
+ * is no imposter to name, no ballot to tally and no accusation to eject.
+ *
+ * The one thing this does that the others do not is *finish the scoring*. On a
+ * round with an authored reference every take was already scored as it landed
+ * and this only ranks them. On a consensus round nothing could be scored during
+ * the phase — each take is measured against the average of everybody **else's**,
+ * which is not known until the last player has gone — so the numbers are worked
+ * out here. Excluding a player's own take from the average they are scored
+ * against matters: leave it in and a lobby of two scores them both near 100 for
+ * agreeing with themselves.
+ */
+function finalizeVoiceResults(room: RoomState, io: Server) {
+  clearRoomTimer(room.code);
+  const line = room.voiceLine;
+  const reference = room.voiceReference;
+
+  // Everyone who was in the turn order owes a take, so a player who never
+  // performed lands on the table at zero rather than vanishing off it.
+  const performers = activePlayers(room);
+  const settled: VoiceTake[] = performers.map((p) => {
+    const taken = room.takes.find((t) => t.playerId === p.id);
+    const print = room.takePrints[p.id];
+
+    if (!taken || !print) {
+      return {
+        playerId: p.id,
+        playerName: p.name,
+        avatar: p.avatar,
+        match: null,
+        points: 0,
+        turnIndex: room.turnOrder.indexOf(p.id),
+      };
+    }
+
+    if (reference) return taken;
+
+    const others = Object.entries(room.takePrints)
+      .filter(([id]) => id !== p.id)
+      .map(([, v]) => v);
+    // One take in the whole round has nothing to be compared with. `null`
+    // rather than 0: there was no measurement, and a 0% next to a take somebody
+    // actually gave reads as a verdict on it. The detail line below says so.
+    if (others.length === 0) return { ...taken, match: null, points: 0 };
+    const match = similarity(print, averageFingerprint(others));
+    return { ...taken, match, points: scoreMatch(match) };
+  });
+
+  // Distinguishes "you never went" from "you went, but there was nobody to
+  // compare you with" — both end up with a null match and they are not the
+  // same thing to the player reading the table.
+  const performed = new Set(room.takes.map((t) => t.playerId));
+
+  // Points first, then the raw percentage. The tie-break is not decoration: the
+  // points are four coarse bands, so a whole lobby routinely lands on the same
+  // number, and ranking those arbitrarily puts 77% above 86% on a table whose
+  // other column is the percentage. Every other scored mode ranks on points
+  // alone because points are all it has; this one has the finer measure and
+  // should use it.
+  const scoreLines: ScoreLine[] = settled
+    .map((t) => ({
+      playerId: t.playerId,
+      name: t.playerName,
+      avatar: t.avatar,
+      points: t.points,
+      match: t.match,
+      detail:
+        t.match !== null
+          ? `${t.match}% match${reference ? '' : ' (vs the room)'}`
+          : performed.has(t.playerId)
+            ? 'nobody else recorded a take to compare with'
+            : 'never recorded a take',
+    }))
+    .sort((a, b) => b.points - a.points || (b.match ?? -1) - (a.match ?? -1))
+    .map(({ match, ...line }) => line);
+
+  const pointsOf = new Map(scoreLines.map((l) => [l.playerId, l.points]));
+  const payload: GameResults = {
+    kind: 'score',
+    scores: scoreLines,
+    spectrum: null,
+    spectrumTarget: null,
+    psychicId: null,
+    psychicClue: null,
+    imposterId: '',
+    imposterIds: [],
+    imposterName: '',
+    imposterAvatar: '',
+    mostVotedId: null,
+    mostVotedName: '',
+    accusedIds: [],
+    accusedNames: [],
+    imposterCount: 0,
+    impostersCaught: 0,
+    outcome: 'crew',
+    crewWins: true,
+    tally: {},
+    normalVideoUrl: '',
+    imposterVideoUrl: '',
+    normalPrompt: null,
+    imposterPrompt: null,
+    drawWord: null,
+    drawTheme: null,
+    voiceLine: line,
+    // In turn order rather than score order — the score order is `scores`, and
+    // the run of the round is worth being able to read back.
+    voiceTakes: [...settled].sort((a, b) => a.turnIndex - b.turnIndex),
+    bluffWord: null,
+    bluffTruth: null,
+    bluffReveal: null,
+    players: room.players.map((p) => ({
+      id: p.id,
+      name: p.name,
+      avatar: p.avatar,
+      cosmetics: p.cosmetics,
+      votes: 0,
+      isImposter: false,
+      wasAccused: false,
+      isSpectator: p.isSpectator,
+      coinReward: coinsForPoints(p.isSpectator, pointsOf.get(p.id) ?? 0),
+    })),
+  };
+
+  room.phase = 'results';
+  room.lastResults = payload;
+  io.to(room.code).emit('game:results', payload);
+  bankRewards(room, payload);
+  console.log(
+    `[Voicer] Results in ${room.code}: "${line?.quote ?? '?'}" — ` +
+      `${scoreLines.length} takes, scored against ${reference ? 'the original' : 'the room'}`
+  );
 }
 
 /**

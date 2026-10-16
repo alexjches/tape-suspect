@@ -18,12 +18,8 @@ import { useSession, signOut } from 'next-auth/react';
 import Link from 'next/link';
 import { CrtShell } from '@/components/vhs/CrtShell';
 import { Avatar } from '@/components/vhs/Avatar';
-import { nextAvatar, toAvatarCode } from '@/lib/avatars';
+import { nextAvatar, toAvatarCode, FIRST_FRAME_AVATAR } from '@/lib/avatars';
 
-// Shown for the frame between the prerendered HTML and the session arriving.
-// Same reason /signup and /dashboard have one: this route is prerendered, so
-// nothing that varies per player can be computed during render.
-const FIRST_FRAME_AVATAR = 'c00';
 
 export default function ProfilePage() {
   const router = useRouter();

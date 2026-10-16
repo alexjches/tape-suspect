@@ -4,6 +4,9 @@
 
 import { useEffect, useRef, useImperativeHandle, forwardRef, useCallback } from 'react';
 import { parseVideoUrl } from '@/lib/videoParser';
+// The IFrame API loader moved to src/lib/youtubeApi.ts when Choicer Voicer
+// needed a second player — see the note there for why two copies cannot exist.
+import { loadYouTubeAPI } from '@/lib/youtubeApi';
 
 export interface VideoPlayerHandle {
   play: () => void;
@@ -14,38 +17,6 @@ interface Props {
   url: string;
   onEnded?: () => void;
   onReady?: () => void;
-}
-
-declare global {
-  interface Window {
-    YT: any;
-    onYouTubeIframeAPIReady: () => void;
-    _ytReady: boolean;
-  }
-}
-
-// Load YouTube IFrame API once
-function loadYouTubeAPI(): Promise<void> {
-  return new Promise((resolve) => {
-    if (window.YT?.Player) {
-      resolve();
-      return;
-    }
-    if (window._ytReady) {
-      const poll = setInterval(() => {
-        if (window.YT?.Player) {
-          clearInterval(poll);
-          resolve();
-        }
-      }, 100);
-      return;
-    }
-    window._ytReady = true;
-    const tag = document.createElement('script');
-    tag.src = 'https://www.youtube.com/iframe_api';
-    document.head.appendChild(tag);
-    window.onYouTubeIframeAPIReady = resolve;
-  });
 }
 
 export const VideoPlayer = forwardRef<VideoPlayerHandle, Props>(

@@ -7,13 +7,11 @@ import { useEffect, useState } from 'react';
 import { signIn } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { randomAvatar, nextAvatar } from '@/lib/avatars';
+import { randomAvatar, nextAvatar, FIRST_FRAME_AVATAR } from '@/lib/avatars';
 import { CrtShell } from '@/components/vhs/CrtShell';
 import { Avatar } from '@/components/vhs/Avatar';
 import { OAuthButtons } from '@/components/auth/OAuthButtons';
 
-// Shown for the single frame between the prerendered HTML and the first roll.
-const FIRST_FRAME_AVATAR = 'c00';
 
 export default function SignupPage() {
   const router = useRouter();

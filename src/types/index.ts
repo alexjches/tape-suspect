@@ -14,6 +14,7 @@ export type GamePhase =
   | 'guessing'
   | 'writing'
   | 'bluffvote'
+  | 'voicing'
   | 'deliberation'
   | 'results';
 
@@ -77,6 +78,12 @@ export interface RoomPublic {
   spectrum: Spectrum | null;
   /** The psychic's clue, public the moment it is submitted. */
   psychicClue: string | null;
+  /**
+   * The Choicer Voicer line being performed. Public for the same reason the
+   * spectrum is: everyone is aiming at it. The reference *fingerprint* is the
+   * secret half and is not on this type — see VoiceLine.
+   */
+  voiceLine: VoiceLine | null;
   players: PlayerPublic[];
   settings: {
     isPublic: boolean;
@@ -174,6 +181,71 @@ export interface GameAssignment {
 export interface Spectrum {
   left: string;
   right: string;
+}
+
+/**
+ * The iconic line a Choicer Voicer round is performing.
+ *
+ * Entirely public — a round nobody can hear the target of is unplayable. What
+ * is held back is the 384-number reference fingerprint the takes are scored
+ * against, which lives on `RoomState.voiceReference` and never leaves the
+ * server. `scoredAgainstOriginal` says which of the two scoring paths this
+ * round is on, because a match percentage means something different under each.
+ */
+export interface VoiceLine {
+  id: string;
+  quote: string;
+  source: string;
+  /**
+   * Same-origin path to the original recording. The room hears this at the top
+   * of the round and can replay it on demand, and it is what the ORIGINAL
+   * waveform is drawn from — so it has to be fetchable and decodable, not just
+   * playable. Null on a line with no audio, which runs off the quote alone.
+   */
+  audio: string | null;
+  /**
+   * The moment on YouTube, played through the official IFrame API (§5, ToS).
+   *
+   * This is the *playback* half and it cannot be the waveform half: an embed is
+   * a cross-origin iframe, so the page can neither read its samples nor route it
+   * through Web Audio. A YouTube-only line therefore draws its ORIGINAL bar from
+   * `peaks` below, and is scored against the room unless somebody has also run
+   * the fingerprint script over the audio.
+   */
+  youtubeId: string | null;
+  startSeconds: number | null;
+  endSeconds: number | null;
+  /**
+   * WAVEFORM_COLUMNS numbers, 0..1 — the original's envelope, precomputed.
+   *
+   * Public, and safe to be: it is a picture of a clip the whole room is about to
+   * hear. It is *not* the fingerprint — 96 loudness columns cannot be handed
+   * back as a 384-number frequency vector, so this cannot be used to fake a
+   * score. Null means the client decodes `audio` for itself instead.
+   */
+  peaks: number[] | null;
+  scoredAgainstOriginal: boolean;
+}
+
+/**
+ * One player's performance, as the room sees it.
+ *
+ * The fingerprint itself is deliberately absent: it is 384 numbers nobody can
+ * read, it would triple the size of every broadcast, and a client holding
+ * everyone else's could work out the reference by averaging. The match
+ * percentage is the whole of what the room needs.
+ *
+ * **No audio is transmitted.** A take is recorded, fingerprinted and discarded
+ * inside the performer's own browser — see VoiceScreen.
+ */
+export interface VoiceTake {
+  playerId: string;
+  playerName: string;
+  avatar: string;
+  /** 0–100. Null when the turn timed out with nothing recorded. */
+  match: number | null;
+  points: number;
+  turnIndex: number;
 }
 
 /**
@@ -293,6 +365,13 @@ export interface GameResults {
   /** What the crew were drawing, and the hint the fake had. Null elsewhere. */
   drawWord: string | null;
   drawTheme: string | null;
+  /**
+   * Choicer Voicer: the line that was performed, and every take in turn order.
+   * Both were already public during the round — this is the reveal only in the
+   * sense that the table is now final.
+   */
+  voiceLine: VoiceLine | null;
+  voiceTakes: VoiceTake[] | null;
   /** Bluff: the word, the true definition, and who wrote what. */
   bluffWord: string | null;
   bluffTruth: string | null;

@@ -8,7 +8,8 @@
     "start": "NODE_ENV=production tsx server.js",
     "lint": "next lint",
     "apple:secret": "node scripts/generate-apple-secret.mjs",
-    "avatars:ingest": "node scripts/ingest-avatars.mjs"
+    "avatars:ingest": "node scripts/ingest-avatars.mjs",
+    "voicer:fingerprint": "tsx scripts/fingerprint-voiceline.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.2",

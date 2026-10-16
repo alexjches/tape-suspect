@@ -40,6 +40,9 @@ export const CUSTOM_CATEGORY = 'custom';
  *             close they land
  *   bluff     an obscure word, everyone writes a fake definition, then the
  *             room votes on which one is real. Also scored, not accused
+ *   voice     an iconic line; players take turns performing it into their own
+ *             microphone and are scored on how closely the frequencies of the
+ *             take match the reference. Scored, not accused
  *
  * Only `video` needs the sync, the player lockdown and the tape animations.
  * `word` and `question` are read off a card and the round moves straight on.
@@ -50,7 +53,14 @@ export const CUSTOM_CATEGORY = 'custom';
  * the invariant narrows to "nobody learns anyone *else's* role" — imposterIds
  * still never leaves the server in a broadcast.
  */
-export type ModeStyle = 'video' | 'word' | 'question' | 'draw' | 'spectrum' | 'bluff';
+export type ModeStyle =
+  | 'video'
+  | 'word'
+  | 'question'
+  | 'draw'
+  | 'spectrum'
+  | 'bluff'
+  | 'voice';
 
 export interface VideoCategory {
   id: string;
@@ -125,6 +135,13 @@ export const VIDEO_CATEGORIES: Record<string, VideoCategory> = {
     description: 'An obscure word — write a fake meaning, then spot the real one',
     style: 'bluff',
   },
+  voicer: {
+    id: 'voicer',
+    name: 'Choicer Voicer',
+    icon: '🎙️',
+    description: 'Take turns performing an iconic line — closest voice match wins',
+    style: 'voice',
+  },
 };
 
 /**
@@ -153,7 +170,7 @@ export const MODE_GROUPS: ModeGroup[] = [
     id: 'games',
     label: 'GAMES',
     blurb: 'No tape to watch — read your card and talk your way out of it',
-    modeIds: ['words', 'questions', 'fake_artist', 'wavelength', 'bluff'],
+    modeIds: ['words', 'questions', 'fake_artist', 'wavelength', 'bluff', 'voicer'],
   },
   {
     id: 'video',
@@ -193,6 +210,11 @@ export const SPECTRUM_MODE_IDS = Object.values(VIDEO_CATEGORIES)
 /** The one mode backed by /content/fakeartist.json. */
 export const DRAW_MODE_IDS = Object.values(VIDEO_CATEGORIES)
   .filter((c) => c.style === 'draw')
+  .map((c) => c.id);
+
+/** The one mode backed by /content/voicelines.json. */
+export const VOICE_MODE_IDS = Object.values(VIDEO_CATEGORIES)
+  .filter((c) => c.style === 'voice')
   .map((c) => c.id);
 
 export function isKnownCategory(id: string | null | undefined): boolean {
@@ -237,6 +259,11 @@ export function isBluffStyle(id: string | null | undefined): boolean {
   return modeStyle(id) === 'bluff';
 }
 
+/** True for the impression mode — the one that wants a microphone. */
+export function isVoiceStyle(id: string | null | undefined): boolean {
+  return modeStyle(id) === 'voice';
+}
+
 /**
  * True when the round ends in a score rather than an accusation.
  *
@@ -246,7 +273,7 @@ export function isBluffStyle(id: string | null | undefined): boolean {
  */
 export function isScoredStyle(id: string | null | undefined): boolean {
   const style = modeStyle(id);
-  return style === 'spectrum' || style === 'bluff';
+  return style === 'spectrum' || style === 'bluff' || style === 'voice';
 }
 
 /** True when there is no tape to buffer, sync, play or wait for the end of. */
@@ -258,11 +285,15 @@ export function isVideoStyle(id: string | null | undefined): boolean {
  * Can this mode run on content the host supplied instead of the pool?
  *
  * The two styles whose round is built from an authored *pair* — two clips, or
- * two cards — because that is the shape a host can type. Fake Artist, Wavelength
- * and Bluff are deliberately out: each needs something structurally different
- * (a word plus a category, a labelled scale plus a hidden point, a word plus its
- * real dictionary definition), and a half-built custom form for them would be a
- * worse answer than saying the mode does not take one yet.
+ * two cards — because that is the shape a host can type. Fake Artist, Wavelength,
+ * Bluff and Choicer Voicer are deliberately out: each needs something
+ * structurally different (a word plus a category, a labelled scale plus a hidden
+ * point, a word plus its real dictionary definition, a line plus a *fingerprint
+ * of the original recording*), and a half-built custom form for them would be a
+ * worse answer than saying the mode does not take one yet. Choicer Voicer is the
+ * clearest case: a host can type a quote, but there is nothing to score it
+ * against until somebody has run the reference audio through
+ * scripts/fingerprint-voiceline.mjs.
  *
  * Branch on this, never on a mode id — that is what kept Fake Artist out of the
  * prompt pool it has no pairs for.
